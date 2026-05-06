@@ -18,6 +18,9 @@ from app.api.notifications import router as notification_router
 from app.api.promotions import router as promotions_router
 from app.api.subscriptions import router as subscriptions_router
 from app.api.payments import router as payments_router
+from app.db.database import Base
+from app.models import *
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(swagger_ui_parameters={"persistAuthorization": True})
 from fastapi.middleware.cors import CORSMiddleware
