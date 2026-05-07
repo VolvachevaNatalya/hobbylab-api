@@ -4,6 +4,7 @@ from typing import List
 from app.db.dependencies import get_db
 from app.schemas.organization import OrganizationCreate, OrganizationResponse
 from app.models.organization import Organization
+from app.models.notification import Notification
 from app.core.auth import get_current_user
 from app.models.user import User
 from app.models.organization_user import OrganizationUser
@@ -11,13 +12,23 @@ from app.schemas.organization import OrganizationUpdate
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
+
+@router.get("/", response_model=List[OrganizationResponse])
+def get_organizations(db: Session = Depends(get_db)):
+    return (
+        db.query(Organization)
+        .filter(Organization.status == "active", Organization.verified == True)
+        .all()
+    )
+
+
 @router.post("/", response_model=OrganizationResponse)
 def create_organization(
     org: OrganizationCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    organization = Organization(**org.model_dump())
+    organization = Organization(**org.model_dump(), status="pending", verified=False)
     db.add(organization)
     db.flush()
 
@@ -26,8 +37,17 @@ def create_organization(
         user_id=current_user.id,
         role="owner"
     )
-
     db.add(org_user)
+
+    admin_notification = Notification(
+        user_id=1,
+        organization_id=organization.id,
+        title="New organization pending approval",
+        message=f"New organization pending approval: {organization.name}",
+        type="new_organization",
+    )
+    db.add(admin_notification)
+
     db.commit()
     db.refresh(organization)
 

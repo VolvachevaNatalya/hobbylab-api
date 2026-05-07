@@ -1,7 +1,10 @@
-from pydantic import BaseModel, EmailStr
-from typing import Optional
+from pydantic import BaseModel, EmailStr, field_validator
+from typing import Optional, Literal
 from decimal import Decimal
 from datetime import datetime
+
+ALLOWED_STATUSES = {"pending", "active", "blocked"}
+
 
 class OrganizationCreate(BaseModel):
     name: str
@@ -56,3 +59,11 @@ class OrganizationUpdate(BaseModel):
     city: Optional[str] = None
     latitude: Optional[Decimal] = None
     longitude: Optional[Decimal] = None
+    status: Optional[str] = None
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v):
+        if v is not None and v not in ALLOWED_STATUSES:
+            raise ValueError(f"status must be one of: {', '.join(sorted(ALLOWED_STATUSES))}")
+        return v

@@ -27,9 +27,9 @@ class Organization(Base):
     latitude = Column(DECIMAL(10, 8))
     longitude = Column(DECIMAL(11, 8))
 
-    verified = Column(Boolean, server_default="false")
+    verified = Column(Boolean, server_default="false", default=False)
 
-    status = Column(String(50), server_default="active")
+    status = Column(String(50), server_default="pending", default="pending")
 
     created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime)
+    updated_at = Column(DateTime, onupdate=func.now())
