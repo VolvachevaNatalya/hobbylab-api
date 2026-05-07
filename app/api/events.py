@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.db.dependencies import get_db
 from app.models.event import Event
@@ -16,8 +16,11 @@ router = APIRouter(
 
 
 @router.get("/", response_model=List[EventResponse])
-def get_events(db: Session = Depends(get_db)):
-    return db.query(Event).all()
+def get_events(organization_id: Optional[int] = None, db: Session = Depends(get_db)):
+    query = db.query(Event)
+    if organization_id is not None:
+        query = query.filter(Event.organization_id == organization_id)
+    return query.all()
 
 
 @router.post("/", response_model=EventResponse)

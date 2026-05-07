@@ -23,9 +23,11 @@ router = APIRouter(
 
 
 @router.get("/", response_model=List[ClassResponse])
-def get_classes(db: Session = Depends(get_db)):
-    classes = db.query(Class).all()
-    return classes
+def get_classes(organization_id: Optional[int] = None, db: Session = Depends(get_db)):
+    query = db.query(Class)
+    if organization_id is not None:
+        query = query.filter(Class.organization_id == organization_id)
+    return query.all()
 
 
 @router.post("/", response_model=ClassResponse)
