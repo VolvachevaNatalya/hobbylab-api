@@ -24,6 +24,8 @@ class ClassResponse(BaseModel):
     price_type: Optional[str]
     status: str
     created_at: datetime
+    organization_name: Optional[str] = None
+    category_name: Optional[str] = None
 
     class Config:
         from_attributes = True

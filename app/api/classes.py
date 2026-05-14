@@ -24,10 +24,31 @@ router = APIRouter(
 
 @router.get("/", response_model=List[ClassResponse])
 def get_classes(organization_id: Optional[int] = None, db: Session = Depends(get_db)):
-    query = db.query(Class)
+    from app.models.category import Category as CategoryModel
+    query = (
+        db.query(Class, Organization.name.label("org_name"), CategoryModel.name.label("cat_name"))
+        .join(Organization, Class.organization_id == Organization.id)
+        .outerjoin(CategoryModel, Class.category_id == CategoryModel.id)
+    )
     if organization_id is not None:
         query = query.filter(Class.organization_id == organization_id)
-    return query.all()
+    out = []
+    for class_obj, org_name, cat_name in query.all():
+        out.append(ClassResponse(
+            id=class_obj.id,
+            organization_id=class_obj.organization_id,
+            category_id=class_obj.category_id,
+            name=class_obj.name,
+            description=class_obj.description,
+            image_url=class_obj.image_url,
+            price=class_obj.price,
+            price_type=class_obj.price_type,
+            status=class_obj.status,
+            created_at=class_obj.created_at,
+            organization_name=org_name,
+            category_name=cat_name,
+        ))
+    return out
 
 
 @router.post("/", response_model=ClassResponse)

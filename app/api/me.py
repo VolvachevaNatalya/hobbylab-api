@@ -12,6 +12,7 @@ router = APIRouter()
 class UserUpdate(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
+    avatar_url: Optional[str] = None
 
 
 @router.get("/me")
@@ -29,6 +30,8 @@ def update_me(
         current_user.name = body.name
     if body.phone is not None:
         current_user.phone = body.phone
+    if body.avatar_url is not None:
+        current_user.avatar_url = body.avatar_url
     db.commit()
     db.refresh(current_user)
     return current_user

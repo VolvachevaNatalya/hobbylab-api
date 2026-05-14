@@ -23,6 +23,7 @@ class ReviewResponse(BaseModel):
     comment: Optional[str]
     created_at: datetime
     status: str
+    user_name: Optional[str] = None
 
     class Config:
         from_attributes = True

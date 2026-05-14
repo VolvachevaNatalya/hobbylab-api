@@ -9,6 +9,13 @@ from app.models.user import User
 from app.core.auth import get_current_user
 
 
+def _attach_user_name(review: Review, db: Session) -> dict:
+    data = {c.name: getattr(review, c.name) for c in review.__table__.columns}
+    user = db.query(User).filter(User.id == review.user_id).first()
+    data['user_name'] = user.name if user else None
+    return data
+
+
 router = APIRouter(
     prefix="/reviews",
     tags=["reviews"]
@@ -41,7 +48,7 @@ def create_review(
     db.commit()
     db.refresh(new_review)
 
-    return new_review
+    return _attach_user_name(new_review, db)
 
 
 @router.get("/organization/{organization_id}", response_model=List[ReviewResponse])
@@ -49,9 +56,10 @@ def get_reviews_by_org(
     organization_id: int,
     db: Session = Depends(get_db)
 ):
-    return db.query(Review).filter(
+    reviews = db.query(Review).filter(
         Review.organization_id == organization_id
     ).all()
+    return [_attach_user_name(r, db) for r in reviews]
 
 
 @router.put("/{review_id}", response_model=ReviewResponse)
@@ -76,7 +84,7 @@ def update_review(
     db.commit()
     db.refresh(review)
 
-    return review
+    return _attach_user_name(review, db)
 
 
 @router.delete("/{review_id}")
