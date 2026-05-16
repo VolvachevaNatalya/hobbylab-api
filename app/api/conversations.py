@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import exists
 from typing import List
 
 from app.db.dependencies import get_db
 from app.models.conversation import Conversation
+from app.models.message import Message
 from app.schemas.conversation import ConversationCreate, ConversationResponse
 from app.models.user import User
 from app.core.auth import get_current_user
@@ -48,6 +50,11 @@ def get_user_conversations(
     current_user: User = Depends(get_current_user)
 ):
 
-    return db.query(Conversation).filter(
-        Conversation.user_id == current_user.id
-    ).all()
+    return (
+        db.query(Conversation)
+        .filter(
+            Conversation.user_id == current_user.id,
+            exists().where(Message.conversation_id == Conversation.id)
+        )
+        .all()
+    )
