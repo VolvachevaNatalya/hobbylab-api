@@ -10,6 +10,7 @@ class Notification(Base):
 
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=True)
 
     title = Column(String(255), nullable=False)
     message = Column(Text)

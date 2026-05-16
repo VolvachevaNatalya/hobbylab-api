@@ -22,6 +22,14 @@ from app.db.database import Base
 from app.models import *
 Base.metadata.create_all(bind=engine)
 
+# Add columns introduced after initial schema creation
+with engine.connect() as _conn:
+    _conn.execute(text(
+        "ALTER TABLE notifications "
+        "ADD COLUMN IF NOT EXISTS conversation_id INTEGER REFERENCES conversations(id)"
+    ))
+    _conn.commit()
+
 app = FastAPI(swagger_ui_parameters={"persistAuthorization": True})
 from fastapi.middleware.cors import CORSMiddleware
 

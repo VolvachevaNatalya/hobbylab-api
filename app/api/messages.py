@@ -46,6 +46,8 @@ def create_message(
     conversation.last_message_at = datetime.now(timezone.utc)
 
     notification = Notification(
+        user_id=conversation.user_id,
+        conversation_id=data.conversation_id,
         organization_id=conversation.organization_id,
         title="New message",
         message="You have a new message",

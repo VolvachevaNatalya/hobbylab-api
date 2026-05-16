@@ -11,7 +11,9 @@ class NotificationCreate(BaseModel):
 
 class NotificationResponse(BaseModel):
     id: int
-    user_id: int
+    user_id: Optional[int]
+    organization_id: Optional[int]
+    conversation_id: Optional[int]
     title: str
     message: Optional[str]
     type: str
