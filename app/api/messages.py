@@ -10,6 +10,7 @@ from app.schemas.message import MessageCreate, MessageResponse
 from app.models.user import User
 from app.core.auth import get_current_user
 from app.models.notification import Notification
+from app.models.organization_user import OrganizationUser
 
 router = APIRouter(
     prefix="/messages",
@@ -45,8 +46,13 @@ def create_message(
 
     conversation.last_message_at = datetime.now(timezone.utc)
 
+    org_owner = db.query(OrganizationUser).filter(
+        OrganizationUser.organization_id == conversation.organization_id,
+        OrganizationUser.role.in_(["owner", "admin"])
+    ).first()
+
     notification = Notification(
-        user_id=conversation.user_id,
+        user_id=org_owner.user_id if org_owner else conversation.user_id,
         conversation_id=data.conversation_id,
         organization_id=conversation.organization_id,
         title="New message",
