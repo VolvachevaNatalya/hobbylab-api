@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import exists
+from sqlalchemy import exists, or_
 from typing import List
 
 from app.db.dependencies import get_db
@@ -8,6 +8,7 @@ from app.models.conversation import Conversation
 from app.models.message import Message
 from app.schemas.conversation import ConversationCreate, ConversationResponse
 from app.models.user import User
+from app.models.organization_user import OrganizationUser
 from app.core.auth import get_current_user
 
 
@@ -50,10 +51,17 @@ def get_user_conversations(
     current_user: User = Depends(get_current_user)
 ):
 
+    owned_org_ids = db.query(OrganizationUser.organization_id).filter(
+        OrganizationUser.user_id == current_user.id
+    ).subquery()
+
     return (
         db.query(Conversation)
         .filter(
-            Conversation.user_id == current_user.id,
+            or_(
+                Conversation.user_id == current_user.id,
+                Conversation.organization_id.in_(owned_org_ids)
+            ),
             exists().where(Message.conversation_id == Conversation.id)
         )
         .all()
