@@ -18,6 +18,19 @@ router = APIRouter(
 )
 
 
+def _is_org_member(db: Session, organization_id: int, user_id: int) -> bool:
+    return db.query(OrganizationUser).filter(
+        OrganizationUser.organization_id == organization_id,
+        OrganizationUser.user_id == user_id
+    ).first() is not None
+
+
+def _has_conversation_access(conversation: Conversation, current_user: User, db: Session) -> bool:
+    if conversation.user_id == current_user.id:
+        return True
+    return _is_org_member(db, conversation.organization_id, current_user.id)
+
+
 @router.post("/", response_model=MessageResponse)
 def create_message(
     data: MessageCreate,
@@ -32,7 +45,7 @@ def create_message(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if conversation.user_id != current_user.id:
+    if not _has_conversation_access(conversation, current_user, db):
         raise HTTPException(status_code=403, detail="No permission")
 
     message = Message(
@@ -46,21 +59,26 @@ def create_message(
 
     conversation.last_message_at = datetime.now(timezone.utc)
 
-    org_owner = db.query(OrganizationUser).filter(
-        OrganizationUser.organization_id == conversation.organization_id,
-        OrganizationUser.role.in_(["owner", "admin"])
-    ).first()
+    is_sender_the_user = current_user.id == conversation.user_id
+    if is_sender_the_user:
+        org_owner = db.query(OrganizationUser).filter(
+            OrganizationUser.organization_id == conversation.organization_id,
+            OrganizationUser.role.in_(["owner", "admin"])
+        ).first()
+        notify_user_id = org_owner.user_id if org_owner else None
+    else:
+        notify_user_id = conversation.user_id
 
-    notification = Notification(
-        user_id=org_owner.user_id if org_owner else conversation.user_id,
-        conversation_id=data.conversation_id,
-        organization_id=conversation.organization_id,
-        title="New message",
-        message="You have a new message",
-        type="message"
-    )
-
-    db.add(notification)
+    if notify_user_id:
+        notification = Notification(
+            user_id=notify_user_id,
+            conversation_id=data.conversation_id,
+            organization_id=conversation.organization_id,
+            title="New message",
+            message="You have a new message",
+            type="message"
+        )
+        db.add(notification)
 
     db.commit()
     db.refresh(message)
@@ -81,7 +99,7 @@ def get_messages(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    if conversation.user_id != current_user.id:
+    if not _has_conversation_access(conversation, current_user, db):
         raise HTTPException(status_code=403, detail="No permission")
 
     return db.query(Message).filter(
