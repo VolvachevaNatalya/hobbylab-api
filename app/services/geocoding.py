@@ -1,7 +1,8 @@
+import json
 import os
+import urllib.parse
+import urllib.request
 from typing import Optional, Tuple
-
-import httpx
 
 
 def geocode(address: Optional[str], city: Optional[str]) -> Tuple[Optional[float], Optional[float]]:
@@ -19,13 +20,12 @@ def geocode(address: Optional[str], city: Optional[str]) -> Tuple[Optional[float
         return None, None
 
     query = ", ".join(parts)
+    url = "https://maps.googleapis.com/maps/api/geocode/json?" + urllib.parse.urlencode(
+        {"address": query, "key": api_key}
+    )
     try:
-        response = httpx.get(
-            "https://maps.googleapis.com/maps/api/geocode/json",
-            params={"address": query, "key": api_key},
-            timeout=5.0,
-        )
-        data = response.json()
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
         if data.get("status") == "OK" and data.get("results"):
             loc = data["results"][0]["geometry"]["location"]
             return float(loc["lat"]), float(loc["lng"])
