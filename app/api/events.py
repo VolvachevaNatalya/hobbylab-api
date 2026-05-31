@@ -8,6 +8,7 @@ from app.schemas.event import EventCreate, EventResponse, EventUpdate
 from app.models.organization_user import OrganizationUser
 from app.models.user import User
 from app.core.auth import get_current_user
+from app.services.geocoding import geocode
 
 router = APIRouter(
     prefix="/events",
@@ -34,8 +35,12 @@ def create_event(
                                                  OrganizationUser.user_id == current_user.id).first()
     if not org_user:
         raise HTTPException(status_code=403, detail="No permission")
-    new_event = Event(**event.model_dump())
-
+    event_data = event.model_dump()
+    lat, lng = geocode(event_data.get("address"), event_data.get("city"))
+    if lat is not None:
+        event_data["latitude"] = lat
+        event_data["longitude"] = lng
+    new_event = Event(**event_data)
 
     db.add(new_event)
     db.commit()
@@ -73,7 +78,17 @@ def update_event(
     if not org_user:
         raise HTTPException(status_code=403, detail="No permission")
 
-    for key, value in event_update.model_dump(exclude_unset=True).items():
+    update_data = event_update.model_dump(exclude_unset=True)
+
+    if "address" in update_data or "city" in update_data:
+        new_address = update_data.get("address", event.address)
+        new_city = update_data.get("city", event.city)
+        lat, lng = geocode(new_address, new_city)
+        if lat is not None:
+            update_data["latitude"] = lat
+            update_data["longitude"] = lng
+
+    for key, value in update_data.items():
         setattr(event, key, value)
 
     db.commit()

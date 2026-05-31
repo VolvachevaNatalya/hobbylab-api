@@ -9,6 +9,7 @@ from app.core.auth import get_current_user
 from app.models.user import User
 from app.models.organization_user import OrganizationUser
 from app.schemas.organization import OrganizationUpdate
+from app.services.geocoding import geocode
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
@@ -28,7 +29,12 @@ def create_organization(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    organization = Organization(**org.model_dump(), status="pending", verified=False)
+    org_data = org.model_dump()
+    lat, lng = geocode(org_data.get("address"), org_data.get("city"))
+    if lat is not None:
+        org_data["latitude"] = lat
+        org_data["longitude"] = lng
+    organization = Organization(**org_data, status="pending", verified=False)
     db.add(organization)
     db.flush()
 
@@ -95,7 +101,17 @@ def update_organization(
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    for key, value in org_update.model_dump(exclude_unset=True).items():
+    update_data = org_update.model_dump(exclude_unset=True)
+
+    if "address" in update_data or "city" in update_data:
+        new_address = update_data.get("address", organization.address)
+        new_city = update_data.get("city", organization.city)
+        lat, lng = geocode(new_address, new_city)
+        if lat is not None:
+            update_data["latitude"] = lat
+            update_data["longitude"] = lng
+
+    for key, value in update_data.items():
         setattr(organization, key, value)
 
     db.commit()

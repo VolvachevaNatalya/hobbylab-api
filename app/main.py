@@ -18,6 +18,7 @@ from app.api.notifications import router as notification_router
 from app.api.promotions import router as promotions_router
 from app.api.subscriptions import router as subscriptions_router
 from app.api.payments import router as payments_router
+from app.api.admin import router as admin_router
 from app.db.database import Base
 from app.models import *
 Base.metadata.create_all(bind=engine)
@@ -56,6 +57,7 @@ app.include_router(notification_router)
 app.include_router(promotions_router)
 app.include_router(subscriptions_router)
 app.include_router(payments_router)
+app.include_router(admin_router)
 
 
 @app.get("/")
