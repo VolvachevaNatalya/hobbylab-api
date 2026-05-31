@@ -1,20 +1,23 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from datetime import datetime
 from typing import List, Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import case, func, or_
+from sqlalchemy.orm import Session
+
+from app.core.auth import get_current_user
 from app.db.dependencies import get_db
 from app.models.classes import Class
-from app.schemas.classes import ClassCreate, ClassResponse, ClassUpdate
-from app.models.organization_user import OrganizationUser
-from app.core.auth import get_current_user
-from app.models.user import User
-from app.schemas.class_search import ClassSearchParams
-from sqlalchemy import or_
-from app.models.organization import Organization
+from app.models.favorite import Favorite
 from app.models.group import Group
 from app.models.group_schedule import GroupSchedule
-from sqlalchemy import func
+from app.models.organization import Organization
+from app.models.organization_user import OrganizationUser
+from app.models.promotion import Promotion
 from app.models.review import Review
-from app.models.favorite import Favorite
+from app.models.user import User
+from app.schemas.class_search import ClassSearchParams
+from app.schemas.classes import ClassCreate, ClassResponse, ClassUpdate
 
 router = APIRouter(
     prefix="/classes",
@@ -22,9 +25,93 @@ router = APIRouter(
 )
 
 
+def _haversine(lat: float, lng: float, lat_col, lng_col):
+    return 6371 * func.acos(
+        func.least(
+            1.0,
+            func.cos(func.radians(lat)) * func.cos(func.radians(lat_col)) *
+            func.cos(func.radians(lng_col) - func.radians(lng)) +
+            func.sin(func.radians(lat)) * func.sin(func.radians(lat_col)),
+        )
+    )
+
+
+def _promo_rank(promotion_type_col):
+    return case(
+        (promotion_type_col == "top", 3),
+        (promotion_type_col == "featured", 2),
+        (promotion_type_col == "highlighted", 1),
+        else_=0,
+    )
+
+
+def _build_class_response(class_obj, org_name, cat_name, distance_km=None):
+    return ClassResponse(
+        id=class_obj.id,
+        organization_id=class_obj.organization_id,
+        category_id=class_obj.category_id,
+        name=class_obj.name,
+        description=class_obj.description,
+        image_url=class_obj.image_url,
+        price=class_obj.price,
+        price_type=class_obj.price_type,
+        status=class_obj.status,
+        created_at=class_obj.created_at,
+        organization_name=org_name,
+        category_name=cat_name,
+        distance_km=distance_km,
+    )
+
+
 @router.get("/", response_model=List[ClassResponse])
-def get_classes(organization_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_classes(
+    organization_id: Optional[int] = None,
+    user_latitude: Optional[float] = None,
+    user_longitude: Optional[float] = None,
+    radius_km: float = 25,
+    db: Session = Depends(get_db),
+):
     from app.models.category import Category as CategoryModel
+
+    if user_latitude is not None and user_longitude is not None:
+        now = datetime.utcnow()
+        dist = _haversine(user_latitude, user_longitude,
+                          Organization.latitude, Organization.longitude)
+        best_rank = func.coalesce(func.max(_promo_rank(Promotion.promotion_type)), 0)
+
+        query = (
+            db.query(
+                Class,
+                Organization.name.label("org_name"),
+                CategoryModel.name.label("cat_name"),
+                dist.label("dist_km"),
+                best_rank.label("rank"),
+            )
+            .join(Organization, Class.organization_id == Organization.id)
+            .outerjoin(CategoryModel, Class.category_id == CategoryModel.id)
+            .outerjoin(
+                Promotion,
+                (Promotion.organization_id == Organization.id) &
+                (Promotion.start_date <= now) &
+                (Promotion.end_date >= now),
+            )
+            .filter(
+                Organization.latitude.isnot(None),
+                Organization.longitude.isnot(None),
+                dist <= radius_km,
+            )
+            .group_by(Class.id, Organization.id, CategoryModel.id)
+            .order_by(best_rank.desc(), dist.asc())
+        )
+        if organization_id is not None:
+            query = query.filter(Class.organization_id == organization_id)
+
+        return [
+            _build_class_response(c, org_name, cat_name, round(float(d), 2))
+            for c, org_name, cat_name, d, _ in query.all()
+        ]
+
+    # No radius filter — existing behaviour
     query = (
         db.query(Class, Organization.name.label("org_name"), CategoryModel.name.label("cat_name"))
         .join(Organization, Class.organization_id == Organization.id)
@@ -32,23 +119,7 @@ def get_classes(organization_id: Optional[int] = None, db: Session = Depends(get
     )
     if organization_id is not None:
         query = query.filter(Class.organization_id == organization_id)
-    out = []
-    for class_obj, org_name, cat_name in query.all():
-        out.append(ClassResponse(
-            id=class_obj.id,
-            organization_id=class_obj.organization_id,
-            category_id=class_obj.category_id,
-            name=class_obj.name,
-            description=class_obj.description,
-            image_url=class_obj.image_url,
-            price=class_obj.price,
-            price_type=class_obj.price_type,
-            status=class_obj.status,
-            created_at=class_obj.created_at,
-            organization_name=org_name,
-            category_name=cat_name,
-        ))
-    return out
+    return [_build_class_response(c, org_name, cat_name) for c, org_name, cat_name in query.all()]
 
 
 @router.post("/", response_model=ClassResponse)

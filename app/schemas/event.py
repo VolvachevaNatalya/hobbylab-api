@@ -54,6 +54,7 @@ class EventResponse(BaseModel):
 
     created_at: datetime
     status: str
+    distance_km: Optional[float] = None
 
     class Config:
         from_attributes = True

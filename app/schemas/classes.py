@@ -26,6 +26,7 @@ class ClassResponse(BaseModel):
     created_at: datetime
     organization_name: Optional[str] = None
     category_name: Optional[str] = None
+    distance_km: Optional[float] = None
 
     class Config:
         from_attributes = True

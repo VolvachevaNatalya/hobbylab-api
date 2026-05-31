@@ -41,6 +41,7 @@ class OrganizationResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: Optional[datetime]
+    distance_km: Optional[float] = None
 
     class Config:
         from_attributes = True
