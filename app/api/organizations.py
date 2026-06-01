@@ -2,15 +2,17 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import case, func
+from sqlalchemy import case, exists, func
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.db.dependencies import get_db
+from app.models.classes import Class
 from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
 from app.models.promotion import Promotion
+from app.models.review import Review
 from app.models.user import User
 from app.schemas.organization import OrganizationCreate, OrganizationResponse, OrganizationUpdate
 from app.services.geocoding import geocode
@@ -40,18 +42,58 @@ def _promo_rank(promotion_type_col):
     )
 
 
+def _category_filter(category_id: Optional[int]):
+    """EXISTS subquery: org has at least one class in the given category."""
+    if category_id is None:
+        return None
+    return exists().where(
+        (Class.organization_id == Organization.id) &
+        (Class.category_id == category_id)
+    )
+
+
+def _rating_map(org_ids: list[int], db: Session) -> dict[int, tuple[float, int]]:
+    """Returns {org_id: (average_rating, review_count)} for active reviews."""
+    if not org_ids:
+        return {}
+    rows = (
+        db.query(
+            Review.organization_id,
+            func.avg(Review.rating).label("avg"),
+            func.count(Review.id).label("cnt"),
+        )
+        .filter(Review.organization_id.in_(org_ids), Review.status == "active")
+        .group_by(Review.organization_id)
+        .all()
+    )
+    return {r.organization_id: (round(float(r.avg), 2), int(r.cnt)) for r in rows}
+
+
 @router.get("/", response_model=List[OrganizationResponse])
 def get_organizations(
     user_latitude: Optional[float] = None,
     user_longitude: Optional[float] = None,
     radius_km: float = 25,
+    category_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
+    cat_filter = _category_filter(category_id)
+
     if user_latitude is not None and user_longitude is not None:
         now = datetime.utcnow()
         dist = _haversine(user_latitude, user_longitude,
                           Organization.latitude, Organization.longitude)
         best_rank = func.coalesce(func.max(_promo_rank(Promotion.promotion_type)), 0)
+
+        filters = [
+            Organization.status == "active",
+            Organization.verified == True,
+            Organization.latitude.isnot(None),
+            Organization.longitude.isnot(None),
+            dist <= radius_km,
+        ]
+        if cat_filter is not None:
+            filters.append(cat_filter)
 
         rows = (
             db.query(Organization, dist.label("dist_km"), best_rank.label("rank"))
@@ -61,30 +103,42 @@ def get_organizations(
                 (Promotion.start_date <= now) &
                 (Promotion.end_date >= now),
             )
-            .filter(
-                Organization.status == "active",
-                Organization.verified == True,
-                Organization.latitude.isnot(None),
-                Organization.longitude.isnot(None),
-                dist <= radius_km,
-            )
+            .filter(*filters)
             .group_by(Organization.id)
             .order_by(best_rank.desc(), dist.asc())
             .all()
         )
 
+        ratings = _rating_map([org.id for org, _, _ in rows], db)
         out = []
         for org, dist_km, _ in rows:
+            avg, cnt = ratings.get(org.id, (0.0, 0))
             resp = OrganizationResponse.model_validate(org)
-            resp = resp.model_copy(update={"distance_km": round(float(dist_km), 2)})
+            resp = resp.model_copy(update={
+                "distance_km": round(float(dist_km), 2),
+                "average_rating": avg,
+                "review_count": cnt,
+            })
             out.append(resp)
         return out
 
-    return (
+    # No radius — filter by category only
+    base_filters = [Organization.status == "active", Organization.verified == True]
+    if cat_filter is not None:
+        base_filters.append(cat_filter)
+    orgs = (
         db.query(Organization)
-        .filter(Organization.status == "active", Organization.verified == True)
+        .filter(*base_filters)
         .all()
     )
+    ratings = _rating_map([o.id for o in orgs], db)
+    out = []
+    for org in orgs:
+        avg, cnt = ratings.get(org.id, (0.0, 0))
+        resp = OrganizationResponse.model_validate(org)
+        resp = resp.model_copy(update={"average_rating": avg, "review_count": cnt})
+        out.append(resp)
+    return out
 
 
 @router.post("/", response_model=OrganizationResponse)

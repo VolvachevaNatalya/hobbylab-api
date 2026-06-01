@@ -42,6 +42,8 @@ class OrganizationResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime]
     distance_km: Optional[float] = None
+    average_rating: float = 0.0
+    review_count: int = 0
 
     class Config:
         from_attributes = True
