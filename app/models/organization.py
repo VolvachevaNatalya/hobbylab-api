@@ -20,6 +20,10 @@ class Organization(Base):
 
     instagram_url = Column(Text)
     facebook_url = Column(Text)
+    telegram_url = Column(Text)
+    youtube_url = Column(Text)
+    tiktok_url = Column(Text)
+    whatsapp_url = Column(Text)
 
     address = Column(Text)
     city = Column(String(100))

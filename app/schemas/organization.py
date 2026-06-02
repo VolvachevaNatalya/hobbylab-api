@@ -16,6 +16,10 @@ class OrganizationCreate(BaseModel):
     website: Optional[str] = None
     instagram_url: Optional[str] = None
     facebook_url: Optional[str] = None
+    telegram_url: Optional[str] = None
+    youtube_url: Optional[str] = None
+    tiktok_url: Optional[str] = None
+    whatsapp_url: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     latitude: Optional[Decimal] = None
@@ -33,6 +37,10 @@ class OrganizationResponse(BaseModel):
     website: Optional[str]
     instagram_url: Optional[str]
     facebook_url: Optional[str]
+    telegram_url: Optional[str] = None
+    youtube_url: Optional[str] = None
+    tiktok_url: Optional[str] = None
+    whatsapp_url: Optional[str] = None
     address: Optional[str]
     city: Optional[str]
     latitude: Optional[Decimal]
@@ -58,6 +66,10 @@ class OrganizationUpdate(BaseModel):
     website: Optional[str] = None
     instagram_url: Optional[str] = None
     facebook_url: Optional[str] = None
+    telegram_url: Optional[str] = None
+    youtube_url: Optional[str] = None
+    tiktok_url: Optional[str] = None
+    whatsapp_url: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     latitude: Optional[Decimal] = None
