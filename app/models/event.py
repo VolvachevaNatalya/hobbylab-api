@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, DECIMAL
+from sqlalchemy import Boolean, Column, Integer, String, Text, ForeignKey, DateTime, DECIMAL
 from sqlalchemy.sql import func
 from app.db.database import Base
 
@@ -37,6 +37,8 @@ class Event(Base):
 
     latitude = Column(DECIMAL(10, 8))
     longitude = Column(DECIMAL(11, 8))
+
+    is_nationwide = Column(Boolean, server_default="false", default=False)
 
     created_at = Column(DateTime, server_default=func.now())
 

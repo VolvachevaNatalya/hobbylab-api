@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import case, func
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -59,12 +59,17 @@ def get_events(
                 (Promotion.end_date >= now),
             )
             .filter(
-                Event.latitude.isnot(None),
-                Event.longitude.isnot(None),
-                dist <= radius_km,
+                or_(
+                    Event.is_nationwide == True,
+                    and_(
+                        Event.latitude.isnot(None),
+                        Event.longitude.isnot(None),
+                        dist <= radius_km,
+                    ),
+                )
             )
             .group_by(Event.id)
-            .order_by(best_rank.desc(), dist.asc())
+            .order_by(best_rank.desc(), func.coalesce(dist, 9999.0).asc())
         )
         if organization_id is not None:
             query = query.filter(Event.organization_id == organization_id)
@@ -72,7 +77,9 @@ def get_events(
         out = []
         for event, dist_km, _ in query.all():
             resp = EventResponse.model_validate(event)
-            resp = resp.model_copy(update={"distance_km": round(float(dist_km), 2)})
+            resp = resp.model_copy(update={
+                "distance_km": round(float(dist_km), 2) if dist_km is not None else None
+            })
             out.append(resp)
         return out
 

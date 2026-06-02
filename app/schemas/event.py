@@ -27,6 +27,8 @@ class EventCreate(BaseModel):
     latitude: Optional[Decimal] = None
     longitude: Optional[Decimal] = None
 
+    is_nationwide: bool = False
+
 
 class EventResponse(BaseModel):
     id: int
@@ -52,6 +54,7 @@ class EventResponse(BaseModel):
     latitude: Optional[Decimal]
     longitude: Optional[Decimal]
 
+    is_nationwide: bool = False
     created_at: datetime
     status: str
     distance_km: Optional[float] = None
@@ -79,4 +82,5 @@ class EventUpdate(BaseModel):
     latitude: Optional[Decimal] = None
     longitude: Optional[Decimal] = None
 
+    is_nationwide: Optional[bool] = None
     status: Optional[str] = None
