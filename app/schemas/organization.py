@@ -49,6 +49,9 @@ class OrganizationResponse(BaseModel):
     status: str
     created_at: datetime
     updated_at: Optional[datetime]
+    trial_lesson_available: bool = False
+    trial_lesson_price: Optional[float] = None
+    trial_lesson_comment: Optional[str] = None
     distance_km: Optional[float] = None
     average_rating: float = 0.0
     review_count: int = 0
@@ -75,6 +78,9 @@ class OrganizationUpdate(BaseModel):
     latitude: Optional[Decimal] = None
     longitude: Optional[Decimal] = None
     status: Optional[str] = None
+    trial_lesson_available: Optional[bool] = None
+    trial_lesson_price: Optional[float] = None
+    trial_lesson_comment: Optional[str] = None
 
     @field_validator("status")
     @classmethod

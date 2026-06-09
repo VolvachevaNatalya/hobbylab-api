@@ -31,6 +31,10 @@ class Organization(Base):
     latitude = Column(DECIMAL(10, 8))
     longitude = Column(DECIMAL(11, 8))
 
+    trial_lesson_available = Column(Boolean, server_default="false", default=False, nullable=False)
+    trial_lesson_price = Column(DECIMAL(10, 2), nullable=True)
+    trial_lesson_comment = Column(Text, nullable=True)
+
     verified = Column(Boolean, server_default="false", default=False)
 
     status = Column(String(50), server_default="pending", default="pending")

@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.db.dependencies import get_db
+from app.models.category import Category
 from app.models.event import Event
+from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
 from app.models.promotion import Promotion
 from app.models.user import User
@@ -15,6 +17,22 @@ from app.schemas.event import EventCreate, EventResponse, EventUpdate
 from app.services.geocoding import geocode
 
 router = APIRouter(prefix="/events", tags=["events"])
+
+
+def _enrich(event: Event, db: Session) -> EventResponse:
+    """Build EventResponse and populate joined organization_name / category_name."""
+    resp = EventResponse.model_validate(event)
+    if event.organization_id:
+        org = db.query(Organization.name).filter(
+            Organization.id == event.organization_id
+        ).scalar()
+        resp = resp.model_copy(update={"organization_name": org})
+    if event.category_id:
+        cat = db.query(Category.name).filter(
+            Category.id == event.category_id
+        ).scalar()
+        resp = resp.model_copy(update={"category_name": cat})
+    return resp
 
 
 def _haversine(lat: float, lng: float, lat_col, lng_col):
@@ -76,7 +94,7 @@ def get_events(
 
         out = []
         for event, dist_km, _ in query.all():
-            resp = EventResponse.model_validate(event)
+            resp = _enrich(event, db)
             resp = resp.model_copy(update={
                 "distance_km": round(float(dist_km), 2) if dist_km is not None else None
             })
@@ -86,7 +104,7 @@ def get_events(
     query = db.query(Event)
     if organization_id is not None:
         query = query.filter(Event.organization_id == organization_id)
-    return query.all()
+    return [_enrich(e, db) for e in query.all()]
 
 
 @router.post("/", response_model=EventResponse)
@@ -120,7 +138,7 @@ def get_event(event_id: int, db: Session = Depends(get_db)):
     event = db.query(Event).filter(Event.id == event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
-    return event
+    return _enrich(event, db)
 
 
 @router.put("/{event_id}", response_model=EventResponse)

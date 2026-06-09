@@ -59,6 +59,10 @@ class EventResponse(BaseModel):
     status: str
     distance_km: Optional[float] = None
 
+    # Joined fields
+    organization_name: Optional[str] = None
+    category_name: Optional[str] = None
+
     class Config:
         from_attributes = True
 
