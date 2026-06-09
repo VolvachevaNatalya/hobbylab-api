@@ -38,6 +38,9 @@ class Event(Base):
     latitude = Column(DECIMAL(10, 8))
     longitude = Column(DECIMAL(11, 8))
 
+    price = Column(DECIMAL(10, 2), nullable=True)
+    price_comment = Column(Text, nullable=True)
+
     is_nationwide = Column(Boolean, server_default="false", default=False)
 
     created_at = Column(DateTime, server_default=func.now())

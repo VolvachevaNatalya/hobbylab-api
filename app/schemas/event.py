@@ -28,6 +28,8 @@ class EventCreate(BaseModel):
     longitude: Optional[Decimal] = None
 
     is_nationwide: bool = False
+    price: Optional[float] = None
+    price_comment: Optional[str] = None
 
 
 class EventResponse(BaseModel):
@@ -55,6 +57,8 @@ class EventResponse(BaseModel):
     longitude: Optional[Decimal]
 
     is_nationwide: bool = False
+    price: Optional[float] = None
+    price_comment: Optional[str] = None
     created_at: datetime
     status: str
     distance_km: Optional[float] = None
@@ -88,3 +92,5 @@ class EventUpdate(BaseModel):
 
     is_nationwide: Optional[bool] = None
     status: Optional[str] = None
+    price: Optional[float] = None
+    price_comment: Optional[str] = None
