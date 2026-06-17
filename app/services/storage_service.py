@@ -2,7 +2,7 @@ import os
 import uuid
 from webdav3.client import Client
 
-_PUBLIC_BASE = "https://static.hobbylab.co.il/upload"
+_PUBLIC_BASE = "https://static.hobbylab.co.il"
 
 _WEBDAV_URL = os.getenv("WEBDAV_URL", "davs://static.hobbylab.co.il/upload")
 _WEBDAV_USERNAME = os.getenv("WEBDAV_USERNAME", "")
