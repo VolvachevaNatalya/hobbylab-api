@@ -35,6 +35,88 @@ with engine.connect() as _conn:
     _conn.commit()
 
 app = FastAPI(swagger_ui_parameters={"persistAuthorization": True})
+
+
+import os
+import base64
+import requests
+
+@app.get("/debug-webdav")
+def debug_webdav():
+    url = "https://static.hobbylab.co.il/upload/"
+
+    username = os.getenv("WEBDAV_USERNAME")
+    password = os.getenv("WEBDAV_PASSWORD")
+
+    if not username or not password:
+        return {
+            "error": "WEBDAV_USERNAME or WEBDAV_PASSWORD is missing",
+            "username_exists": bool(username),
+            "password_exists": bool(password),
+        }
+
+    results = {}
+
+    for method in ["HEAD", "OPTIONS", "PROPFIND"]:
+        try:
+            headers = {}
+            if method == "PROPFIND":
+                headers["Depth"] = "0"
+
+            r = requests.request(
+                method,
+                url,
+                auth=(username, password),
+                headers=headers,
+                timeout=20,
+            )
+
+            results[method] = {
+                "status": r.status_code,
+                "reason": r.reason,
+                "text": r.text[:300],
+            }
+
+        except Exception as e:
+            results[method] = {
+                "error": str(e)
+            }
+
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+
+    try:
+        r = requests.request(
+            "PROPFIND",
+            url,
+            headers={
+                "Authorization": f"Basic {token}",
+                "Depth": "0",
+            },
+            timeout=20,
+        )
+
+        results["manual_basic"] = {
+            "status": r.status_code,
+            "reason": r.reason,
+            "text": r.text[:300],
+        }
+
+    except Exception as e:
+        results["manual_basic"] = {
+            "error": str(e)
+        }
+
+    return {
+        "username_exists": True,
+        "password_exists": True,
+        "username_length": len(username),
+        "password_length": len(password),
+        "username_has_spaces": username != username.strip(),
+        "password_has_spaces": password != password.strip(),
+        "results": results,
+    }
+
+
 from fastapi.middleware.cors import CORSMiddleware
 
 app.add_middleware(
