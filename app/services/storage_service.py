@@ -4,7 +4,7 @@ from webdav3.client import Client
 
 _PUBLIC_BASE = "https://static.hobbylab.co.il"
 
-_WEBDAV_URL = os.getenv("WEBDAV_URL", "davs://static.hobbylab.co.il/upload")
+_WEBDAV_URL = os.getenv("WEBDAV_URL", "https://static.hobbylab.co.il")
 _WEBDAV_USERNAME = os.getenv("WEBDAV_USERNAME", "")
 _WEBDAV_PASSWORD = os.getenv("WEBDAV_PASSWORD", "")
 
@@ -28,9 +28,9 @@ def upload_file(file_bytes: bytes, filename: str, content_type: str) -> str:
     client = _get_client()
     # write to a temp buffer that webdavclient3 can consume
     import io
-    client.upload_to(buff=io.BytesIO(file_bytes), remote_path=unique_name)
+    client.upload_to(buff=io.BytesIO(file_bytes), remote_path=f"/upload/{unique_name}")
 
-    return f"{_PUBLIC_BASE}/{unique_name}"
+    return f"{_PUBLIC_BASE}/upload/{unique_name}"
 
 
 def delete_file(file_url: str) -> None:
