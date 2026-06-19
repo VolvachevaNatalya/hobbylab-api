@@ -10,3 +10,4 @@ python-jose[cryptography]
 python-multipart
 httpx
 webdavclient3==3.14.7
+Pillow
