@@ -4,6 +4,7 @@ from typing import List
 
 from app.db.dependencies import get_db
 from app.models.review import Review
+from app.models.review_image import ReviewImage
 from app.schemas.review import ReviewCreate, ReviewResponse, ReviewUpdate
 from app.models.user import User
 from app.core.auth import get_current_user
@@ -13,6 +14,8 @@ def _attach_user_name(review: Review, db: Session) -> dict:
     data = {c.name: getattr(review, c.name) for c in review.__table__.columns}
     user = db.query(User).filter(User.id == review.user_id).first()
     data['user_name'] = user.name if user else None
+    images = db.query(ReviewImage).filter(ReviewImage.review_id == review.id).all()
+    data['photo_urls'] = [img.image_url for img in images]
     return data
 
 
@@ -45,6 +48,12 @@ def create_review(
     )
 
     db.add(new_review)
+    db.flush()  # populate new_review.id before inserting images
+
+    if review.photo_urls:
+        for url in review.photo_urls[:5]:
+            db.add(ReviewImage(review_id=new_review.id, image_url=url))
+
     db.commit()
     db.refresh(new_review)
 
