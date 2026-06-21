@@ -11,3 +11,5 @@ python-multipart
 httpx
 webdavclient3==3.14.7
 Pillow
+google-auth
+requests

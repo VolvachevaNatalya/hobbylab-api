@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -10,6 +12,10 @@ from app.core.security import verify_password, create_access_token, hash_passwor
 from fastapi.security import OAuth2PasswordRequestForm
 
 router = APIRouter()
+
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
 
 
 class ChangePasswordRequest(BaseModel):
@@ -59,6 +65,49 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
 
     return db_user
+
+
+@router.post("/auth/google-login")
+def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(status_code=500, detail="Google login not configured on server")
+
+    try:
+        id_info = google_id_token.verify_oauth2_token(
+            payload.id_token,
+            google_requests.Request(),
+            client_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid Google token: {e}")
+
+    email: str = id_info.get("email", "")
+    name: str = id_info.get("name") or email.split("@")[0]
+    google_sub: str = id_info.get("sub", "")
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Google token did not include an email address")
+
+    user = db.query(User).filter(User.email == email).first()
+
+    if not user:
+        user = User(
+            email=email,
+            name=name,
+            provider="google",
+            provider_user_id=google_sub,
+            password_hash=None,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    token = create_access_token({"user_id": user.id})
+    return {"access_token": token, "token_type": "bearer"}
 
 
 @router.post("/auth/change-password")
