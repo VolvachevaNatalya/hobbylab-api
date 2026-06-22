@@ -76,6 +76,19 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
     if not client_id:
         raise HTTPException(status_code=500, detail="Google login not configured on server")
 
+    # --- TEMPORARY DEBUG ---
+    import base64, json as _json
+    print(f"[google-login] GOOGLE_CLIENT_ID = {client_id!r}", flush=True)
+    try:
+        _parts = payload.id_token.split(".")
+        _pad = lambda s: s + "=" * (-len(s) % 4)
+        _claims = _json.loads(base64.urlsafe_b64decode(_pad(_parts[1])))
+        print(f"[google-login] token aud = {_claims.get('aud')!r}", flush=True)
+        print(f"[google-login] token azp = {_claims.get('azp')!r}", flush=True)
+    except Exception as _e:
+        print(f"[google-login] could not decode token payload: {_e}", flush=True)
+    # --- END TEMPORARY DEBUG ---
+
     try:
         id_info = google_id_token.verify_oauth2_token(
             payload.id_token,
