@@ -1,4 +1,5 @@
 import os
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -12,6 +13,8 @@ from app.core.security import verify_password, create_access_token, hash_passwor
 from fastapi.security import OAuth2PasswordRequestForm
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleLoginRequest(BaseModel):
@@ -131,6 +134,18 @@ def facebook_login(payload: FacebookLoginRequest, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="Invalid Facebook access token")
 
     data = response.json()
+
+    # TEMP: log raw Facebook response for debugging missing email
+    logger.warning("[facebook-login] Graph API response: %s", data)
+    debug_resp = httpx.get(
+        "https://graph.facebook.com/debug_token",
+        params={
+            "input_token": payload.access_token,
+            "access_token": payload.access_token,
+        },
+        timeout=10,
+    )
+    logger.warning("[facebook-login] Token debug (scopes): %s", debug_resp.json())
 
     if "error" in data:
         raise HTTPException(status_code=401, detail="Invalid Facebook access token")
