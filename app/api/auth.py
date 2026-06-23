@@ -18,6 +18,10 @@ class GoogleLoginRequest(BaseModel):
     id_token: str
 
 
+class FacebookLoginRequest(BaseModel):
+    access_token: str
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
@@ -76,19 +80,6 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
     if not client_id:
         raise HTTPException(status_code=500, detail="Google login not configured on server")
 
-    # --- TEMPORARY DEBUG ---
-    import base64, json as _json
-    print(f"[google-login] GOOGLE_CLIENT_ID = {client_id!r}", flush=True)
-    try:
-        _parts = payload.id_token.split(".")
-        _pad = lambda s: s + "=" * (-len(s) % 4)
-        _claims = _json.loads(base64.urlsafe_b64decode(_pad(_parts[1])))
-        print(f"[google-login] token aud = {_claims.get('aud')!r}", flush=True)
-        print(f"[google-login] token azp = {_claims.get('azp')!r}", flush=True)
-    except Exception as _e:
-        print(f"[google-login] could not decode token payload: {_e}", flush=True)
-    # --- END TEMPORARY DEBUG ---
-
     try:
         id_info = google_id_token.verify_oauth2_token(
             payload.id_token,
@@ -113,6 +104,56 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
             name=name,
             provider="google",
             provider_user_id=google_sub,
+            password_hash=None,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    token = create_access_token({"user_id": user.id})
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@router.post("/auth/facebook-login")
+def facebook_login(payload: FacebookLoginRequest, db: Session = Depends(get_db)):
+    import httpx
+
+    try:
+        response = httpx.get(
+            "https://graph.facebook.com/me",
+            params={"fields": "id,name,email", "access_token": payload.access_token},
+            timeout=10,
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Facebook API: {e}")
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=401, detail="Invalid Facebook access token")
+
+    data = response.json()
+
+    if "error" in data:
+        raise HTTPException(status_code=401, detail="Invalid Facebook access token")
+
+    email: str = data.get("email", "")
+    name: str = data.get("name") or ""
+    facebook_id: str = data.get("id", "")
+
+    if not email:
+        raise HTTPException(
+            status_code=400,
+            detail="Facebook account did not provide an email address. "
+                   "Please grant email permission or use a different login method.",
+        )
+
+    user = db.query(User).filter(User.email == email).first()
+
+    if not user:
+        user = User(
+            email=email,
+            name=name or email.split("@")[0],
+            provider="facebook",
+            provider_user_id=facebook_id,
             password_hash=None,
         )
         db.add(user)
