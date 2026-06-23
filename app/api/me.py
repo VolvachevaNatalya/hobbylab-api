@@ -15,9 +15,23 @@ class UserUpdate(BaseModel):
     avatar_url: Optional[str] = None
 
 
+def _is_fallback_email(user: User) -> bool:
+    return user.provider == "facebook" and (user.email or "").endswith("@facebook.local")
+
+
 @router.get("/me")
 def get_me(current_user: User = Depends(get_current_user)):
-    return current_user
+    return {
+        "id": current_user.id,
+        "email": None if _is_fallback_email(current_user) else current_user.email,
+        "name": current_user.name,
+        "phone": current_user.phone,
+        "avatar_url": current_user.avatar_url,
+        "provider": current_user.provider,
+        "provider_user_id": current_user.provider_user_id,
+        "status": current_user.status,
+        "created_at": current_user.created_at,
+    }
 
 
 @router.patch("/me")
