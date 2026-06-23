@@ -1,5 +1,4 @@
 import os
-import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,8 +12,6 @@ from app.core.security import verify_password, create_access_token, hash_passwor
 from fastapi.security import OAuth2PasswordRequestForm
 
 router = APIRouter()
-
-logger = logging.getLogger(__name__)
 
 
 class GoogleLoginRequest(BaseModel):
@@ -135,18 +132,6 @@ def facebook_login(payload: FacebookLoginRequest, db: Session = Depends(get_db))
 
     data = response.json()
 
-    # TEMP: log raw Facebook response for debugging missing email
-    logger.warning("[facebook-login] Graph API response: %s", data)
-    debug_resp = httpx.get(
-        "https://graph.facebook.com/debug_token",
-        params={
-            "input_token": payload.access_token,
-            "access_token": payload.access_token,
-        },
-        timeout=10,
-    )
-    logger.warning("[facebook-login] Token debug (scopes): %s", debug_resp.json())
-
     if "error" in data:
         raise HTTPException(status_code=401, detail="Invalid Facebook access token")
 
@@ -154,26 +139,36 @@ def facebook_login(payload: FacebookLoginRequest, db: Session = Depends(get_db))
     name: str = data.get("name") or ""
     facebook_id: str = data.get("id", "")
 
-    if not email:
-        raise HTTPException(
-            status_code=400,
-            detail="Facebook account did not provide an email address. "
-                   "Please grant email permission or use a different login method.",
-        )
-
-    user = db.query(User).filter(User.email == email).first()
-
-    if not user:
-        user = User(
-            email=email,
-            name=name or email.split("@")[0],
-            provider="facebook",
-            provider_user_id=facebook_id,
-            password_hash=None,
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    if email:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            user = User(
+                email=email,
+                name=name or email.split("@")[0],
+                provider="facebook",
+                provider_user_id=facebook_id,
+                password_hash=None,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+    else:
+        fallback_email = f"facebook_{facebook_id}@facebook.local"
+        user = db.query(User).filter(
+            User.provider == "facebook",
+            User.provider_user_id == facebook_id,
+        ).first()
+        if not user:
+            user = User(
+                email=fallback_email,
+                name=name or fallback_email,
+                provider="facebook",
+                provider_user_id=facebook_id,
+                password_hash=None,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
 
     token = create_access_token({"user_id": user.id})
     return {"access_token": token, "token_type": "bearer"}
