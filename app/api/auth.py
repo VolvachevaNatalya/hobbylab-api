@@ -22,6 +22,10 @@ class FacebookLoginRequest(BaseModel):
     access_token: str
 
 
+class AppleLoginRequest(BaseModel):
+    id_token: str
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
@@ -164,6 +168,77 @@ def facebook_login(payload: FacebookLoginRequest, db: Session = Depends(get_db))
                 name=name or fallback_email,
                 provider="facebook",
                 provider_user_id=facebook_id,
+                password_hash=None,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+    token = create_access_token({"user_id": user.id})
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@router.post("/auth/apple-login")
+def apple_login(payload: AppleLoginRequest, db: Session = Depends(get_db)):
+    import httpx
+    from jose import jwt, JWTError
+
+    APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+    APPLE_ISSUER = "https://appleid.apple.com"
+    APPLE_CLIENT_ID = "il.co.hobbylab.app"
+
+    try:
+        jwks_response = httpx.get(APPLE_JWKS_URL, timeout=10)
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Apple JWKS endpoint: {e}")
+
+    if jwks_response.status_code != 200:
+        raise HTTPException(status_code=502, detail="Failed to fetch Apple public keys")
+
+    jwks = jwks_response.json()
+
+    try:
+        claims = jwt.decode(
+            payload.id_token,
+            jwks,
+            algorithms=["RS256"],
+            audience=APPLE_CLIENT_ID,
+            issuer=APPLE_ISSUER,
+        )
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid Apple token: {e}")
+
+    apple_sub: str = claims.get("sub", "")
+    email: str = claims.get("email", "")
+
+    if not apple_sub:
+        raise HTTPException(status_code=400, detail="Apple token missing sub claim")
+
+    if email:
+        user = db.query(User).filter(User.email == email).first()
+        if not user:
+            user = User(
+                email=email,
+                name=email.split("@")[0],
+                provider="apple",
+                provider_user_id=apple_sub,
+                password_hash=None,
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+    else:
+        fallback_email = f"apple_{apple_sub}@apple.local"
+        user = db.query(User).filter(
+            User.provider == "apple",
+            User.provider_user_id == apple_sub,
+        ).first()
+        if not user:
+            user = User(
+                email=fallback_email,
+                name=fallback_email,
+                provider="apple",
+                provider_user_id=apple_sub,
                 password_hash=None,
             )
             db.add(user)
