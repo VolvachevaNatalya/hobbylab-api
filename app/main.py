@@ -20,10 +20,13 @@ from app.api.subscriptions import router as subscriptions_router
 from app.api.payments import router as payments_router
 from app.api.admin import router as admin_router
 from app.api.organization_photos import router as organization_photos_router
+from app.api.organization_invites import router as organization_invites_router
 from app.api.upload import router as upload_router
 from app.db.database import Base
 from app.models import *
 from app.models.organization_photo import OrganizationPhoto  # noqa: F401 – ensures table is created
+from app.models.organization_invite_code import OrganizationInviteCode  # noqa: F401 – ensures table is created
+from app.models.organization_join_request import OrganizationJoinRequest  # noqa: F401 – ensures table is created
 Base.metadata.create_all(bind=engine)
 
 # Add columns introduced after initial schema creation
@@ -144,6 +147,7 @@ app.include_router(subscriptions_router)
 app.include_router(payments_router)
 app.include_router(admin_router)
 app.include_router(organization_photos_router)
+app.include_router(organization_invites_router)
 app.include_router(upload_router)
 
 

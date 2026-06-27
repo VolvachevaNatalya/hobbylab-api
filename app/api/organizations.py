@@ -8,6 +8,7 @@ from sqlalchemy import case, exists, func
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
+from app.core.org_permissions import require_owner
 from app.db.dependencies import get_db
 from app.models.classes import Class
 from app.models.notification import Notification
@@ -240,13 +241,7 @@ def delete_organization(
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
 
-    membership = db.query(OrganizationUser).filter(
-        OrganizationUser.organization_id == organization_id,
-        OrganizationUser.user_id == current_user.id,
-        OrganizationUser.role == "owner",
-    ).first()
-    if not membership:
-        raise HTTPException(status_code=403, detail="Only the organization owner can delete it")
+    require_owner(organization_id, current_user.id, db)
 
     # Explicitly remove records whose FKs have no ON DELETE CASCADE, in safe order.
     # payments must go before subscriptions (payment.subscription_id has no cascade).
