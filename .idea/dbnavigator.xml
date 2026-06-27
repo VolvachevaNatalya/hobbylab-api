@@ -64,12 +64,12 @@ ON public.groups(class_id);]]></console>
   </component>
   <component name="DBNavigator.Project.DatabaseFileManager">
     <open-files>
-      <object connection-id="4be23cc3-8be8-4422-ad0d-56324f317fb0" object-ref="schemas/public/tables/organizations" />
       <object connection-id="4be23cc3-8be8-4422-ad0d-56324f317fb0" object-ref="schemas/public/tables/conversations" />
       <object connection-id="4be23cc3-8be8-4422-ad0d-56324f317fb0" object-ref="schemas/public/tables/classes" />
       <object connection-id="4be23cc3-8be8-4422-ad0d-56324f317fb0" object-ref="schemas/public/tables/groups" />
-      <object connection-id="4be23cc3-8be8-4422-ad0d-56324f317fb0" object-ref="schemas/public/tables/users" />
       <object connection-id="4be23cc3-8be8-4422-ad0d-56324f317fb0" object-ref="consoles/Connection 1" />
+      <object connection-id="4be23cc3-8be8-4422-ad0d-56324f317fb0" object-ref="schemas/public/tables/users" />
+      <object connection-id="4be23cc3-8be8-4422-ad0d-56324f317fb0" object-ref="schemas/public/tables/organizations" />
     </open-files>
   </component>
   <component name="DBNavigator.Project.DatabasePrerequisiteManager">

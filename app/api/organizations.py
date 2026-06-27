@@ -12,6 +12,8 @@ from app.db.dependencies import get_db
 from app.models.classes import Class
 from app.models.notification import Notification
 from app.models.organization import Organization
+from app.models.payment import Payment
+from app.models.subscription import Subscription
 from app.models.organization_user import OrganizationUser
 from app.models.promotion import Promotion
 from app.models.review import Review
@@ -229,10 +231,31 @@ def update_organization(
 
 
 @router.delete("/{organization_id}")
-def delete_organization(organization_id: int, db: Session = Depends(get_db)):
+def delete_organization(
+    organization_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     organization = db.query(Organization).filter(Organization.id == organization_id).first()
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
+
+    membership = db.query(OrganizationUser).filter(
+        OrganizationUser.organization_id == organization_id,
+        OrganizationUser.user_id == current_user.id,
+        OrganizationUser.role == "owner",
+    ).first()
+    if not membership:
+        raise HTTPException(status_code=403, detail="Only the organization owner can delete it")
+
+    # Explicitly remove records whose FKs have no ON DELETE CASCADE, in safe order.
+    # payments must go before subscriptions (payment.subscription_id has no cascade).
+    db.query(Payment).filter(Payment.organization_id == organization_id).delete()
+    # promotions reference events (no cascade on event_id); delete before org cascades events.
+    db.query(Promotion).filter(Promotion.organization_id == organization_id).delete()
+    db.query(Subscription).filter(Subscription.organization_id == organization_id).delete()
+    db.query(Notification).filter(Notification.organization_id == organization_id).delete()
+
     db.delete(organization)
     db.commit()
     return {"message": "Organization deleted"}
