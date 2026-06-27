@@ -45,3 +45,10 @@ class JoinResponse(BaseModel):
     requires_approval: bool
     join_request_id: Optional[int] = None
     role: Optional[str] = None
+
+
+class InviteCodeResolveResponse(BaseModel):
+    organization_id: int
+    organization_name: str
+    default_role: str
+    requires_approval: bool

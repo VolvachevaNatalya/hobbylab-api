@@ -20,7 +20,7 @@ from app.api.subscriptions import router as subscriptions_router
 from app.api.payments import router as payments_router
 from app.api.admin import router as admin_router
 from app.api.organization_photos import router as organization_photos_router
-from app.api.organization_invites import router as organization_invites_router
+from app.api.organization_invites import router as organization_invites_router, resolve_router as invite_resolve_router
 from app.api.upload import router as upload_router
 from app.db.database import Base
 from app.models import *
@@ -148,6 +148,7 @@ app.include_router(payments_router)
 app.include_router(admin_router)
 app.include_router(organization_photos_router)
 app.include_router(organization_invites_router)
+app.include_router(invite_resolve_router)
 app.include_router(upload_router)
 
 

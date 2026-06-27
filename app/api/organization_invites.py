@@ -20,12 +20,14 @@ from app.models.user import User
 from app.schemas.organization_invite import (
     InviteCodeCreate,
     InviteCodeResponse,
+    InviteCodeResolveResponse,
     JoinRequestCreate,
     JoinRequestResponse,
     JoinResponse,
 )
 
 router = APIRouter(prefix="/organizations", tags=["organization-invites"])
+resolve_router = APIRouter(prefix="/invite-codes", tags=["invite-codes"])
 
 _CODE_ALPHABET = string.ascii_uppercase + string.digits
 
@@ -269,3 +271,31 @@ def reject_join_request(
     db.delete(request)
     db.commit()
     return {"message": "Join request rejected"}
+
+
+# ── Invite code resolution ────────────────────────────────────────────────────
+
+@resolve_router.get("/resolve", response_model=InviteCodeResolveResponse)
+def resolve_invite_code(
+    code: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    invite = db.query(OrganizationInviteCode).filter(
+        OrganizationInviteCode.code == code,
+    ).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite code not found")
+    if not invite.is_active:
+        raise HTTPException(status_code=400, detail="Invite code is inactive")
+    if invite.expires_at and invite.expires_at < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Invite code has expired")
+
+    org = db.query(Organization).filter(Organization.id == invite.organization_id).first()
+
+    return InviteCodeResolveResponse(
+        organization_id=invite.organization_id,
+        organization_name=org.name,
+        default_role=invite.default_role,
+        requires_approval=invite.requires_approval,
+    )

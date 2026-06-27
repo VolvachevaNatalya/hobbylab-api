@@ -545,6 +545,60 @@ def test_reject_join_request(client, db):
     assert no_membership is None
 
 
+# ── RESOLVE INVITE CODE ───────────────────────────────────────────────────────
+
+def test_resolve_valid_code(client, db):
+    owner = _make_user(db, email="owner@test.com")
+    org = _make_org(db, name="Dance Studio")
+    _make_membership(db, org.id, owner.id, role="owner")
+    invite = _make_invite_code(db, org.id, owner.id, default_role="member", requires_approval=True)
+
+    resp = client.get(f"/invite-codes/resolve?code={invite.code}", headers=_auth(owner.id))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["organization_id"] == org.id
+    assert data["organization_name"] == "Dance Studio"
+    assert data["default_role"] == "member"
+    assert data["requires_approval"] is True
+
+
+def test_resolve_invalid_code(client, db):
+    user = _make_user(db)
+    resp = client.get("/invite-codes/resolve?code=NOTEXIST", headers=_auth(user.id))
+    assert resp.status_code == 404
+
+
+def test_resolve_inactive_code(client, db):
+    owner = _make_user(db, email="owner@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, owner.id, role="owner")
+    invite = _make_invite_code(db, org.id, owner.id, is_active=False)
+
+    resp = client.get(f"/invite-codes/resolve?code={invite.code}", headers=_auth(owner.id))
+    assert resp.status_code == 400
+
+
+def test_resolve_expired_code(client, db):
+    owner = _make_user(db, email="owner@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, owner.id, role="owner")
+    past = datetime.utcnow() - timedelta(days=1)
+    invite = _make_invite_code(db, org.id, owner.id, expires_at=past)
+
+    resp = client.get(f"/invite-codes/resolve?code={invite.code}", headers=_auth(owner.id))
+    assert resp.status_code == 400
+
+
+def test_resolve_unauthenticated(client, db):
+    owner = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, owner.id, role="owner")
+    invite = _make_invite_code(db, org.id, owner.id)
+
+    resp = client.get(f"/invite-codes/resolve?code={invite.code}")
+    assert resp.status_code == 401
+
+
 def test_reject_allows_resubmit(client, db):
     owner = _make_user(db, email="owner@test.com")
     user = _make_user(db, email="user@test.com")
