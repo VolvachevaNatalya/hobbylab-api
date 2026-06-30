@@ -55,6 +55,7 @@ class OrganizationResponse(BaseModel):
     distance_km: Optional[float] = None
     average_rating: float = 0.0
     review_count: int = 0
+    role: Optional[str] = None
 
     class Config:
         from_attributes = True

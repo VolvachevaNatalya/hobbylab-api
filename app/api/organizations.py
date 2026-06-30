@@ -8,7 +8,7 @@ from sqlalchemy import case, exists, func
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
-from app.core.org_permissions import require_owner
+from app.core.org_permissions import require_owner, require_owner_or_admin
 from app.db.dependencies import get_db
 from app.models.classes import Class
 from app.models.notification import Notification
@@ -187,12 +187,16 @@ def get_my_organizations(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return (
-        db.query(Organization)
+    rows = (
+        db.query(Organization, OrganizationUser.role)
         .join(OrganizationUser, Organization.id == OrganizationUser.organization_id)
         .filter(OrganizationUser.user_id == current_user.id)
         .all()
     )
+    return [
+        OrganizationResponse.model_validate(org).model_copy(update={"role": role})
+        for org, role in rows
+    ]
 
 
 @router.get("/{organization_id}", response_model=OrganizationResponse)
@@ -208,10 +212,13 @@ def update_organization(
     organization_id: int,
     org_update: OrganizationUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     organization = db.query(Organization).filter(Organization.id == organization_id).first()
     if not organization:
         raise HTTPException(status_code=404, detail="Organization not found")
+
+    require_owner_or_admin(organization_id, current_user.id, db)
 
     update_data = org_update.model_dump(exclude_unset=True)
 
