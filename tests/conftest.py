@@ -16,6 +16,7 @@ from app.db.database import Base
 from app.db.dependencies import get_db
 from app.api.organizations import router as org_router
 from app.api.organization_invites import router as org_invites_router, resolve_router as invite_resolve_router
+from app.api.organization_members import router as org_members_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
 import app.models.category          # noqa: F401
@@ -45,6 +46,7 @@ app = FastAPI()
 app.include_router(org_router)
 app.include_router(org_invites_router)
 app.include_router(invite_resolve_router)
+app.include_router(org_members_router)
 
 TEST_ENGINE = create_engine(
     "sqlite://",
