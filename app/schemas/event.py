@@ -1,12 +1,17 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, field_validator, model_validator
+from typing import List, Optional
 from datetime import datetime
 from decimal import Decimal
+
+from app.schemas.category import CategoryResponse
 
 
 class EventCreate(BaseModel):
     organization_id: int
+    # Legacy single-category field — accepted during Flutter migration period.
+    # If category_ids is also present, category_ids wins.
     category_id: Optional[int] = None
+    category_ids: Optional[List[int]] = None
 
     title: str
     description: Optional[str] = None
@@ -30,6 +35,23 @@ class EventCreate(BaseModel):
     is_nationwide: bool = False
     price: Optional[float] = None
     price_comment: Optional[str] = None
+
+    @model_validator(mode='after')
+    def resolve_and_validate_categories(self) -> 'EventCreate':
+        if self.category_ids is not None:
+            ids = self.category_ids
+        elif self.category_id is not None:
+            ids = [self.category_id]
+        else:
+            raise ValueError("Either category_id or category_ids must be provided")
+        if len(ids) < 1:
+            raise ValueError("At least one category is required")
+        if len(ids) > 10:
+            raise ValueError("At most 10 categories are allowed")
+        if len(set(ids)) != len(ids):
+            raise ValueError("Duplicate category IDs are not allowed")
+        self.category_ids = ids
+        return self
 
 
 class EventResponse(BaseModel):
@@ -66,9 +88,11 @@ class EventResponse(BaseModel):
     # Joined fields
     organization_name: Optional[str] = None
     category_name: Optional[str] = None
+    categories: List[CategoryResponse] = []
 
     class Config:
         from_attributes = True
+
 
 class EventUpdate(BaseModel):
     title: Optional[str] = None
@@ -94,3 +118,17 @@ class EventUpdate(BaseModel):
     status: Optional[str] = None
     price: Optional[float] = None
     price_comment: Optional[str] = None
+    category_ids: Optional[List[int]] = None
+
+    @field_validator("category_ids")
+    @classmethod
+    def validate_category_ids(cls, v: Optional[List[int]]) -> Optional[List[int]]:
+        if v is None:
+            return v
+        if len(v) < 1:
+            raise ValueError("At least one category is required when updating")
+        if len(v) > 10:
+            raise ValueError("At most 10 categories are allowed")
+        if len(set(v)) != len(v):
+            raise ValueError("Duplicate category IDs are not allowed")
+        return v

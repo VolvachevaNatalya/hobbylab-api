@@ -17,6 +17,7 @@ from app.db.dependencies import get_db
 from app.api.organizations import router as org_router
 from app.api.organization_invites import router as org_invites_router, resolve_router as invite_resolve_router
 from app.api.organization_members import router as org_members_router
+from app.api.events import router as events_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
 import app.models.category          # noqa: F401
@@ -39,6 +40,7 @@ import app.models.subscription      # noqa: F401
 import app.models.user              # noqa: F401
 import app.models.organization_invite_code   # noqa: F401
 import app.models.organization_join_request  # noqa: F401
+import app.models.event_category             # noqa: F401
 
 # Minimal app containing only the organizations router — avoids importing
 # modules with Python-3.9-only syntax (e.g. upload.py) on this 3.8 runtime.
@@ -47,6 +49,7 @@ app.include_router(org_router)
 app.include_router(org_invites_router)
 app.include_router(invite_resolve_router)
 app.include_router(org_members_router)
+app.include_router(events_router)
 
 TEST_ENGINE = create_engine(
     "sqlite://",
