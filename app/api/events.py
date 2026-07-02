@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, exists, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -68,6 +68,25 @@ def _validate_category_ids(category_ids: List[int], db: Session) -> None:
         raise HTTPException(status_code=400, detail=f"Categories not found: {missing}")
 
 
+def _category_filter(category_id: Optional[int]):
+    """WHERE condition matching events that carry the given category.
+
+    Checks both the legacy events.category_id column (old single-category events)
+    and the event_categories junction table (multi-category events).  Using an
+    EXISTS subquery instead of a JOIN means the event row is never multiplied, so
+    no DISTINCT or extra GROUP BY is needed.
+    """
+    if category_id is None:
+        return None
+    return or_(
+        Event.category_id == category_id,
+        exists().where(
+            (EventCategory.event_id == Event.id) &
+            (EventCategory.category_id == category_id)
+        ),
+    )
+
+
 def _haversine(lat: float, lng: float, lat_col, lng_col):
     return 6371 * func.acos(
         func.least(
@@ -91,11 +110,14 @@ def _promo_rank(promotion_type_col):
 @router.get("/", response_model=List[EventResponse])
 def get_events(
     organization_id: Optional[int] = None,
+    category_id: Optional[int] = None,
     user_latitude: Optional[float] = None,
     user_longitude: Optional[float] = None,
     radius_km: float = 25,
     db: Session = Depends(get_db),
 ):
+    cat_filter = _category_filter(category_id)
+
     if user_latitude is not None and user_longitude is not None:
         now = datetime.utcnow()
         dist = _haversine(user_latitude, user_longitude, Event.latitude, Event.longitude)
@@ -124,6 +146,8 @@ def get_events(
         )
         if organization_id is not None:
             query = query.filter(Event.organization_id == organization_id)
+        if cat_filter is not None:
+            query = query.filter(cat_filter)
 
         out = []
         for event, dist_km, _ in query.all():
@@ -137,6 +161,8 @@ def get_events(
     query = db.query(Event)
     if organization_id is not None:
         query = query.filter(Event.organization_id == organization_id)
+    if cat_filter is not None:
+        query = query.filter(cat_filter)
     return [_enrich(e, db) for e in query.all()]
 
 

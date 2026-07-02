@@ -386,6 +386,160 @@ def test_update_event_rejects_nonexistent_category(client, db):
     assert resp.status_code == 400
 
 
+# ── CATEGORY FILTERING ───────────────────────────────────────────────────────
+
+def test_filter_finds_event_by_primary_category(client, db):
+    """An event appears when filtering by its first (primary) category."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    sport = _make_category(db, "Sport")
+    music = _make_category(db, "Music")
+    art = _make_category(db, "Art")
+
+    client.post(
+        "/events/",
+        json=_event_body(org.id, [sport.id, music.id, art.id]),
+        headers=_auth(user.id),
+    )
+
+    resp = client.get("/events/", params={"category_id": sport.id})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+def test_filter_finds_event_by_secondary_category(client, db):
+    """An event with [Sport, Music, Art] appears when filtering by Music (position 1)."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    sport = _make_category(db, "Sport")
+    music = _make_category(db, "Music")
+    art = _make_category(db, "Art")
+
+    client.post(
+        "/events/",
+        json=_event_body(org.id, [sport.id, music.id, art.id]),
+        headers=_auth(user.id),
+    )
+
+    resp = client.get("/events/", params={"category_id": music.id})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+def test_filter_finds_event_by_tertiary_category(client, db):
+    """An event with [Sport, Music, Art] appears when filtering by Art (position 2)."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    sport = _make_category(db, "Sport")
+    music = _make_category(db, "Music")
+    art = _make_category(db, "Art")
+
+    client.post(
+        "/events/",
+        json=_event_body(org.id, [sport.id, music.id, art.id]),
+        headers=_auth(user.id),
+    )
+
+    resp = client.get("/events/", params={"category_id": art.id})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+def test_filter_excludes_event_for_unrelated_category(client, db):
+    """An event tagged [Sport, Music] does not appear when filtering by Art."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    sport = _make_category(db, "Sport")
+    music = _make_category(db, "Music")
+    art = _make_category(db, "Art")
+
+    client.post(
+        "/events/",
+        json=_event_body(org.id, [sport.id, music.id]),
+        headers=_auth(user.id),
+    )
+
+    resp = client.get("/events/", params={"category_id": art.id})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 0
+
+
+def test_filter_no_duplicate_rows(client, db):
+    """When both events.category_id and event_categories match, event appears exactly once."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    sport = _make_category(db, "Sport")
+
+    # New events have category_id == sport.id (legacy col) AND a junction row for sport.id
+    client.post(
+        "/events/",
+        json=_event_body(org.id, [sport.id]),
+        headers=_auth(user.id),
+    )
+
+    resp = client.get("/events/", params={"category_id": sport.id})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+def test_filter_legacy_event_without_junction_rows_is_found(client, db):
+    """Old events with only events.category_id (no junction rows) still appear in filter."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "Legacy Cat")
+
+    # Insert directly, bypassing API — simulates pre-migration data
+    event = Event(
+        organization_id=org.id,
+        category_id=cat.id,
+        title="Old Event",
+        start_datetime=datetime(2026, 8, 1),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get("/events/", params={"category_id": cat.id})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+
+def test_filter_by_category_and_organization_combined(client, db):
+    """category_id and organization_id filters work together correctly."""
+    user = _make_user(db)
+    org1 = _make_org(db)
+    org2 = Organization(name="Other Org", status="active", verified=True)
+    db.add(org2)
+    db.commit()
+    db.refresh(org2)
+
+    _make_membership(db, org1.id, user.id)
+    row2 = OrganizationUser(organization_id=org2.id, user_id=user.id, role="owner")
+    db.add(row2)
+    db.commit()
+
+    sport = _make_category(db, "Sport")
+    music = _make_category(db, "Music")
+
+    client.post("/events/", json=_event_body(org1.id, [sport.id]), headers=_auth(user.id))
+    client.post("/events/", json=_event_body(org2.id, [sport.id, music.id]), headers=_auth(user.id))
+
+    # org1 events filtered by sport → 1 result
+    resp = client.get("/events/", params={"organization_id": org1.id, "category_id": sport.id})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 1
+
+    # org1 events filtered by music → 0 results (org1's event only has Sport)
+    resp = client.get("/events/", params={"organization_id": org1.id, "category_id": music.id})
+    assert resp.status_code == 200
+    assert len(resp.json()) == 0
+
+
 # ── Idempotency ───────────────────────────────────────────────────────────────
 
 def test_event_categories_pk_enforces_idempotency(client, db):
