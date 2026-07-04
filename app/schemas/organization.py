@@ -1,7 +1,9 @@
 from pydantic import BaseModel, EmailStr, field_validator
-from typing import Optional, Literal
+from typing import List, Optional
 from decimal import Decimal
 from datetime import datetime
+
+from app.schemas.category import CategoryResponse
 
 ALLOWED_STATUSES = {"pending", "active", "blocked"}
 
@@ -24,6 +26,18 @@ class OrganizationCreate(BaseModel):
     city: Optional[str] = None
     latitude: Optional[Decimal] = None
     longitude: Optional[Decimal] = None
+    category_ids: List[int]
+
+    @field_validator("category_ids")
+    @classmethod
+    def validate_category_ids(cls, v: List[int]) -> List[int]:
+        if len(v) < 1:
+            raise ValueError("At least one category is required")
+        if len(v) > 10:
+            raise ValueError("At most 10 categories are allowed")
+        if len(set(v)) != len(v):
+            raise ValueError("Duplicate category IDs are not allowed")
+        return v
 
 
 class OrganizationResponse(BaseModel):
@@ -56,9 +70,11 @@ class OrganizationResponse(BaseModel):
     average_rating: float = 0.0
     review_count: int = 0
     role: Optional[str] = None
+    categories: List[CategoryResponse] = []
 
     class Config:
         from_attributes = True
+
 
 class OrganizationUpdate(BaseModel):
     name: Optional[str] = None
@@ -82,10 +98,24 @@ class OrganizationUpdate(BaseModel):
     trial_lesson_available: Optional[bool] = None
     trial_lesson_price: Optional[float] = None
     trial_lesson_comment: Optional[str] = None
+    category_ids: Optional[List[int]] = None
 
     @field_validator("status")
     @classmethod
     def validate_status(cls, v):
         if v is not None and v not in ALLOWED_STATUSES:
             raise ValueError(f"status must be one of: {', '.join(sorted(ALLOWED_STATUSES))}")
+        return v
+
+    @field_validator("category_ids")
+    @classmethod
+    def validate_category_ids(cls, v: Optional[List[int]]) -> Optional[List[int]]:
+        if v is None:
+            return v
+        if len(v) < 1:
+            raise ValueError("At least one category is required when provided")
+        if len(v) > 10:
+            raise ValueError("At most 10 categories are allowed")
+        if len(set(v)) != len(v):
+            raise ValueError("Duplicate category IDs are not allowed")
         return v

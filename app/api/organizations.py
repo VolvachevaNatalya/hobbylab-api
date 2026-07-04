@@ -10,15 +10,17 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.core.org_permissions import require_owner, require_owner_or_admin
 from app.db.dependencies import get_db
-from app.models.classes import Class
+from app.models.category import Category
 from app.models.notification import Notification
 from app.models.organization import Organization
+from app.models.organization_category import OrganizationCategory
 from app.models.payment import Payment
 from app.models.subscription import Subscription
 from app.models.organization_user import OrganizationUser
 from app.models.promotion import Promotion
 from app.models.review import Review
 from app.models.user import User
+from app.schemas.category import CategoryResponse
 from app.schemas.organization import OrganizationCreate, OrganizationResponse, OrganizationUpdate
 from app.services.geocoding import geocode
 
@@ -48,13 +50,23 @@ def _promo_rank(promotion_type_col):
 
 
 def _category_filter(category_id: Optional[int]):
-    """EXISTS subquery: org has at least one class in the given category."""
+    """EXISTS subquery: org is explicitly tagged with the given category."""
     if category_id is None:
         return None
     return exists().where(
-        (Class.organization_id == Organization.id) &
-        (Class.category_id == category_id)
+        (OrganizationCategory.organization_id == Organization.id) &
+        (OrganizationCategory.category_id == category_id)
     )
+
+
+def _validate_category_ids(category_ids: list[int], db: Session) -> None:
+    existing_ids = {
+        row.id for row in
+        db.query(Category.id).filter(Category.id.in_(category_ids)).all()
+    }
+    missing = [cid for cid in category_ids if cid not in existing_ids]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Categories not found: {missing}")
 
 
 def _rating_map(org_ids: list[int], db: Session) -> dict[int, tuple[float, int]]:
@@ -72,6 +84,23 @@ def _rating_map(org_ids: list[int], db: Session) -> dict[int, tuple[float, int]]
         .all()
     )
     return {r.organization_id: (round(float(r.avg), 2), int(r.cnt)) for r in rows}
+
+
+def _category_map(org_ids: list[int], db: Session) -> dict:
+    """Returns {org_id: [CategoryResponse, ...]} ordered by position then category id."""
+    if not org_ids:
+        return {}
+    rows = (
+        db.query(OrganizationCategory, Category)
+        .join(Category, Category.id == OrganizationCategory.category_id)
+        .filter(OrganizationCategory.organization_id.in_(org_ids))
+        .order_by(OrganizationCategory.position.asc(), Category.id.asc())
+        .all()
+    )
+    result: dict = {}
+    for oc, cat in rows:
+        result.setdefault(oc.organization_id, []).append(CategoryResponse.model_validate(cat))
+    return result
 
 
 @router.get("/", response_model=List[OrganizationResponse])
@@ -114,7 +143,9 @@ def get_organizations(
             .all()
         )
 
-        ratings = _rating_map([org.id for org, _, _ in rows], db)
+        org_ids = [org.id for org, _, _ in rows]
+        ratings = _rating_map(org_ids, db)
+        cat_map = _category_map(org_ids, db)
         out = []
         for org, dist_km, _ in rows:
             avg, cnt = ratings.get(org.id, (0.0, 0))
@@ -123,11 +154,11 @@ def get_organizations(
                 "distance_km": round(float(dist_km), 2),
                 "average_rating": avg,
                 "review_count": cnt,
+                "categories": cat_map.get(org.id, []),
             })
             out.append(resp)
         return out
 
-    # No radius — filter by category only
     base_filters = [Organization.status == "active", Organization.verified == True]
     if cat_filter is not None:
         base_filters.append(cat_filter)
@@ -136,12 +167,18 @@ def get_organizations(
         .filter(*base_filters)
         .all()
     )
-    ratings = _rating_map([o.id for o in orgs], db)
+    org_ids = [o.id for o in orgs]
+    ratings = _rating_map(org_ids, db)
+    cat_map = _category_map(org_ids, db)
     out = []
     for org in orgs:
         avg, cnt = ratings.get(org.id, (0.0, 0))
         resp = OrganizationResponse.model_validate(org)
-        resp = resp.model_copy(update={"average_rating": avg, "review_count": cnt})
+        resp = resp.model_copy(update={
+            "average_rating": avg,
+            "review_count": cnt,
+            "categories": cat_map.get(org.id, []),
+        })
         out.append(resp)
     return out
 
@@ -153,6 +190,10 @@ def create_organization(
     current_user: User = Depends(get_current_user),
 ):
     org_data = org.model_dump()
+    category_ids = org_data.pop("category_ids")
+
+    _validate_category_ids(category_ids, db)
+
     lat, lng = geocode(org_data.get("address"), org_data.get("city"))
     if lat is not None:
         org_data["latitude"] = lat
@@ -177,9 +218,16 @@ def create_organization(
     )
     db.add(admin_notification)
 
+    for pos, cat_id in enumerate(category_ids):
+        db.add(OrganizationCategory(
+            organization_id=organization.id, category_id=cat_id, position=pos
+        ))
+
     db.commit()
     db.refresh(organization)
-    return organization
+    cat_map = _category_map([organization.id], db)
+    resp = OrganizationResponse.model_validate(organization)
+    return resp.model_copy(update={"categories": cat_map.get(organization.id, [])})
 
 
 @router.get("/my", response_model=List[OrganizationResponse])
@@ -193,8 +241,13 @@ def get_my_organizations(
         .filter(OrganizationUser.user_id == current_user.id)
         .all()
     )
+    org_ids = [org.id for org, _ in rows]
+    cat_map = _category_map(org_ids, db)
     return [
-        OrganizationResponse.model_validate(org).model_copy(update={"role": role})
+        OrganizationResponse.model_validate(org).model_copy(update={
+            "role": role,
+            "categories": cat_map.get(org.id, []),
+        })
         for org, role in rows
     ]
 
@@ -204,7 +257,9 @@ def get_organization(organization_id: int, db: Session = Depends(get_db)):
     org = db.query(Organization).filter(Organization.id == organization_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
-    return org
+    cat_map = _category_map([org.id], db)
+    resp = OrganizationResponse.model_validate(org)
+    return resp.model_copy(update={"categories": cat_map.get(org.id, [])})
 
 
 @router.put("/{organization_id}", response_model=OrganizationResponse)
@@ -222,6 +277,19 @@ def update_organization(
 
     update_data = org_update.model_dump(exclude_unset=True)
 
+    # Pop category_ids — not an Organization column, must be handled separately
+    category_ids = update_data.pop("category_ids", None)
+
+    if category_ids is not None:
+        _validate_category_ids(category_ids, db)
+        db.query(OrganizationCategory).filter(
+            OrganizationCategory.organization_id == organization_id
+        ).delete()
+        for pos, cat_id in enumerate(category_ids):
+            db.add(OrganizationCategory(
+                organization_id=organization_id, category_id=cat_id, position=pos
+            ))
+
     if "address" in update_data or "city" in update_data:
         new_address = update_data.get("address", organization.address)
         new_city = update_data.get("city", organization.city)
@@ -235,7 +303,9 @@ def update_organization(
 
     db.commit()
     db.refresh(organization)
-    return organization
+    cat_map = _category_map([organization.id], db)
+    resp = OrganizationResponse.model_validate(organization)
+    return resp.model_copy(update={"categories": cat_map.get(organization.id, [])})
 
 
 @router.delete("/{organization_id}")

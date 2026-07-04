@@ -29,6 +29,7 @@ from app.models.organization_photo import OrganizationPhoto  # noqa: F401 – en
 from app.models.organization_invite_code import OrganizationInviteCode  # noqa: F401 – ensures table is created
 from app.models.organization_join_request import OrganizationJoinRequest  # noqa: F401 – ensures table is created
 from app.models.event_category import EventCategory  # noqa: F401 – ensures table is created
+from app.models.organization_category import OrganizationCategory  # noqa: F401 – ensures table is created
 Base.metadata.create_all(bind=engine)
 
 # Add columns introduced after initial schema creation
