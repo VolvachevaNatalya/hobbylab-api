@@ -1,7 +1,14 @@
 """
-Migration: create organization_categories table.
-No backfill needed — organizations never had a category_id column.
-Safe to run more than once — CREATE TABLE IF NOT EXISTS.
+Migration: create organization_categories table and backfill from classes.
+
+Organizations have no category_id column. Their categories are derived from
+the classes they offer: any category assigned to a class is attributed to
+the owning organization.
+
+Step 1: CREATE TABLE IF NOT EXISTS (idempotent).
+Step 2: INSERT DISTINCT (org, category) pairs from classes at position 0.
+        ON CONFLICT DO NOTHING makes this safe to run multiple times.
+
 Run: python migrate_add_organization_categories.py
 """
 import os
@@ -23,6 +30,17 @@ with engine.connect() as conn:
             PRIMARY KEY (organization_id, category_id)
         )
     """))
+
+    conn.execute(text("""
+        INSERT INTO organization_categories (organization_id, category_id, position)
+        SELECT DISTINCT organization_id, category_id, 0
+        FROM classes
+        WHERE category_id IS NOT NULL
+        ON CONFLICT DO NOTHING
+    """))
+
     conn.commit()
 
-print("Migration complete: organization_categories table ready.")
+with engine.connect() as conn:
+    total = conn.execute(text("SELECT COUNT(*) FROM organization_categories")).scalar()
+    print(f"Migration complete: organization_categories table ready, {total} rows total.")
