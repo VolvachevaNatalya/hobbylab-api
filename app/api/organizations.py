@@ -11,6 +11,7 @@ from app.core.auth import get_current_user
 from app.core.org_permissions import require_owner, require_owner_or_admin
 from app.db.dependencies import get_db
 from app.models.category import Category
+from app.models.city import City
 from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.organization_category import OrganizationCategory
@@ -57,6 +58,29 @@ def _category_filter(category_id: Optional[int]):
         (OrganizationCategory.organization_id == Organization.id) &
         (OrganizationCategory.category_id == category_id)
     )
+
+
+def _validate_city_id(city_id: Optional[int], db: Session) -> Optional[str]:
+    if city_id is None:
+        return None
+    city = db.query(City).filter(City.id == city_id, City.is_active == True).first()
+    if not city:
+        raise HTTPException(status_code=400, detail=f"City id={city_id} not found")
+    return city.name_en
+
+
+def _city_map(city_ids, db: Session) -> dict:
+    ids = [cid for cid in city_ids if cid is not None]
+    if not ids:
+        return {}
+    cities = db.query(City).filter(City.id.in_(ids)).all()
+    return {c.id: c for c in cities}
+
+
+def _city_fields(city) -> dict:
+    if city is None:
+        return {"city_name_he": None, "city_name_en": None, "city_name_ru": None}
+    return {"city_name_he": city.name_he, "city_name_en": city.name_en, "city_name_ru": city.name_ru}
 
 
 def _validate_category_ids(category_ids: list[int], db: Session) -> None:
@@ -109,6 +133,7 @@ def get_organizations(
     user_longitude: Optional[float] = None,
     radius_km: float = 25,
     category_id: Optional[int] = None,
+    city_id: Optional[int] = None,
     db: Session = Depends(get_db),
 ):
     cat_filter = _category_filter(category_id)
@@ -128,6 +153,8 @@ def get_organizations(
         ]
         if cat_filter is not None:
             filters.append(cat_filter)
+        if city_id is not None:
+            filters.append(Organization.city_id == city_id)
 
         rows = (
             db.query(Organization, dist.label("dist_km"), best_rank.label("rank"))
@@ -146,6 +173,7 @@ def get_organizations(
         org_ids = [org.id for org, _, _ in rows]
         ratings = _rating_map(org_ids, db)
         cat_map = _category_map(org_ids, db)
+        cities = _city_map([org.city_id for org, _, _ in rows], db)
         out = []
         for org, dist_km, _ in rows:
             avg, cnt = ratings.get(org.id, (0.0, 0))
@@ -155,6 +183,7 @@ def get_organizations(
                 "average_rating": avg,
                 "review_count": cnt,
                 "categories": cat_map.get(org.id, []),
+                **_city_fields(cities.get(org.city_id)),
             })
             out.append(resp)
         return out
@@ -162,6 +191,8 @@ def get_organizations(
     base_filters = [Organization.status == "active", Organization.verified == True]
     if cat_filter is not None:
         base_filters.append(cat_filter)
+    if city_id is not None:
+        base_filters.append(Organization.city_id == city_id)
     orgs = (
         db.query(Organization)
         .filter(*base_filters)
@@ -170,6 +201,7 @@ def get_organizations(
     org_ids = [o.id for o in orgs]
     ratings = _rating_map(org_ids, db)
     cat_map = _category_map(org_ids, db)
+    cities = _city_map([o.city_id for o in orgs], db)
     out = []
     for org in orgs:
         avg, cnt = ratings.get(org.id, (0.0, 0))
@@ -178,6 +210,7 @@ def get_organizations(
             "average_rating": avg,
             "review_count": cnt,
             "categories": cat_map.get(org.id, []),
+            **_city_fields(cities.get(org.city_id)),
         })
         out.append(resp)
     return out
@@ -193,8 +226,10 @@ def create_organization(
     category_ids = org_data.pop("category_ids")
 
     _validate_category_ids(category_ids, db)
+    city_name_en = _validate_city_id(org_data.get("city_id"), db)
 
-    lat, lng = geocode(org_data.get("address"), org_data.get("city"))
+    geocode_city = org_data.get("city") or city_name_en
+    lat, lng = geocode(org_data.get("address"), geocode_city)
     if lat is not None:
         org_data["latitude"] = lat
         org_data["longitude"] = lng
@@ -226,8 +261,12 @@ def create_organization(
     db.commit()
     db.refresh(organization)
     cat_map = _category_map([organization.id], db)
+    cities = _city_map([organization.city_id], db)
     resp = OrganizationResponse.model_validate(organization)
-    return resp.model_copy(update={"categories": cat_map.get(organization.id, [])})
+    return resp.model_copy(update={
+        "categories": cat_map.get(organization.id, []),
+        **_city_fields(cities.get(organization.city_id)),
+    })
 
 
 @router.get("/my", response_model=List[OrganizationResponse])
@@ -243,10 +282,12 @@ def get_my_organizations(
     )
     org_ids = [org.id for org, _ in rows]
     cat_map = _category_map(org_ids, db)
+    cities = _city_map([org.city_id for org, _ in rows], db)
     return [
         OrganizationResponse.model_validate(org).model_copy(update={
             "role": role,
             "categories": cat_map.get(org.id, []),
+            **_city_fields(cities.get(org.city_id)),
         })
         for org, role in rows
     ]
@@ -258,8 +299,12 @@ def get_organization(organization_id: int, db: Session = Depends(get_db)):
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     cat_map = _category_map([org.id], db)
+    cities = _city_map([org.city_id], db)
     resp = OrganizationResponse.model_validate(org)
-    return resp.model_copy(update={"categories": cat_map.get(org.id, [])})
+    return resp.model_copy(update={
+        "categories": cat_map.get(org.id, []),
+        **_city_fields(cities.get(org.city_id)),
+    })
 
 
 @router.put("/{organization_id}", response_model=OrganizationResponse)
@@ -290,9 +335,16 @@ def update_organization(
                 organization_id=organization_id, category_id=cat_id, position=pos
             ))
 
-    if "address" in update_data or "city" in update_data:
+    if "city_id" in update_data:
+        _validate_city_id(update_data["city_id"], db)
+
+    if "address" in update_data or "city" in update_data or "city_id" in update_data:
         new_address = update_data.get("address", organization.address)
+        new_city_id = update_data.get("city_id", organization.city_id)
         new_city = update_data.get("city", organization.city)
+        if new_city is None and new_city_id is not None:
+            city_obj = db.query(City).filter(City.id == new_city_id).first()
+            new_city = city_obj.name_en if city_obj else None
         lat, lng = geocode(new_address, new_city)
         if lat is not None:
             update_data["latitude"] = lat
@@ -304,8 +356,12 @@ def update_organization(
     db.commit()
     db.refresh(organization)
     cat_map = _category_map([organization.id], db)
+    cities = _city_map([organization.city_id], db)
     resp = OrganizationResponse.model_validate(organization)
-    return resp.model_copy(update={"categories": cat_map.get(organization.id, [])})
+    return resp.model_copy(update={
+        "categories": cat_map.get(organization.id, []),
+        **_city_fields(cities.get(organization.city_id)),
+    })
 
 
 @router.delete("/{organization_id}")

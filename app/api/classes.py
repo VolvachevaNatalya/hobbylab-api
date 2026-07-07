@@ -148,6 +148,7 @@ def create_class(
 def search_classes(
     category_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
+    city_id: Optional[int] = None,
     city: Optional[str] = None,
     age: Optional[int] = None,
     day_of_week: Optional[int] = None,
@@ -185,7 +186,9 @@ def search_classes(
 
     if category_id is not None:
         query = query.filter(Class.category_id == category_id)
-    if city:
+    if city_id is not None:
+        query = query.filter(Organization.city_id == city_id)
+    elif city:
         query = query.filter(Organization.city == city)
 
     if search:

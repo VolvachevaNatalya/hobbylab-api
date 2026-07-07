@@ -22,6 +22,7 @@ from app.api.admin import router as admin_router
 from app.api.organization_photos import router as organization_photos_router
 from app.api.organization_invites import router as organization_invites_router, resolve_router as invite_resolve_router
 from app.api.organization_members import router as organization_members_router
+from app.api.cities import router as cities_router
 from app.api.upload import router as upload_router
 from app.db.database import Base
 from app.models import *
@@ -30,6 +31,7 @@ from app.models.organization_invite_code import OrganizationInviteCode  # noqa: 
 from app.models.organization_join_request import OrganizationJoinRequest  # noqa: F401 – ensures table is created
 from app.models.event_category import EventCategory  # noqa: F401 – ensures table is created
 from app.models.organization_category import OrganizationCategory  # noqa: F401 – ensures table is created
+from app.models.city import City  # noqa: F401 – ensures table is created
 Base.metadata.create_all(bind=engine)
 
 # Add columns introduced after initial schema creation
@@ -153,6 +155,7 @@ app.include_router(organization_photos_router)
 app.include_router(organization_invites_router)
 app.include_router(invite_resolve_router)
 app.include_router(organization_members_router)
+app.include_router(cities_router)
 app.include_router(upload_router)
 
 

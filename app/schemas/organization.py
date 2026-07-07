@@ -24,6 +24,7 @@ class OrganizationCreate(BaseModel):
     whatsapp_url: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
+    city_id: Optional[int] = None
     latitude: Optional[Decimal] = None
     longitude: Optional[Decimal] = None
     category_ids: List[int]
@@ -57,6 +58,10 @@ class OrganizationResponse(BaseModel):
     whatsapp_url: Optional[str] = None
     address: Optional[str]
     city: Optional[str]
+    city_id: Optional[int] = None
+    city_name_he: Optional[str] = None
+    city_name_en: Optional[str] = None
+    city_name_ru: Optional[str] = None
     latitude: Optional[Decimal]
     longitude: Optional[Decimal]
     verified: bool
@@ -92,6 +97,7 @@ class OrganizationUpdate(BaseModel):
     whatsapp_url: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
+    city_id: Optional[int] = None
     latitude: Optional[Decimal] = None
     longitude: Optional[Decimal] = None
     status: Optional[str] = None

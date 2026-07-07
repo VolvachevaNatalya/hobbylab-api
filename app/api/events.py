@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.db.dependencies import get_db
 from app.models.category import Category
+from app.models.city import City
 from app.models.event import Event
 from app.models.event_category import EventCategory
 from app.models.organization import Organization
@@ -21,8 +22,31 @@ from app.services.geocoding import geocode
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-def _enrich(event: Event, db: Session) -> EventResponse:
-    """Build EventResponse and populate organization_name, categories, and backward-compat fields."""
+def _validate_city_id(city_id: Optional[int], db: Session) -> Optional[str]:
+    if city_id is None:
+        return None
+    city = db.query(City).filter(City.id == city_id, City.is_active == True).first()
+    if not city:
+        raise HTTPException(status_code=400, detail=f"City id={city_id} not found")
+    return city.name_en
+
+
+def _city_map(city_ids, db: Session) -> dict:
+    ids = [cid for cid in city_ids if cid is not None]
+    if not ids:
+        return {}
+    cities = db.query(City).filter(City.id.in_(ids)).all()
+    return {c.id: c for c in cities}
+
+
+def _city_fields(city) -> dict:
+    if city is None:
+        return {"city_name_he": None, "city_name_en": None, "city_name_ru": None}
+    return {"city_name_he": city.name_he, "city_name_en": city.name_en, "city_name_ru": city.name_ru}
+
+
+def _enrich(event: Event, db: Session, city_map: Optional[dict] = None) -> EventResponse:
+    """Build EventResponse and populate organization_name, categories, city fields, and backward-compat fields."""
     resp = EventResponse.model_validate(event)
 
     if event.organization_id:
@@ -54,6 +78,15 @@ def _enrich(event: Event, db: Session) -> EventResponse:
                 "categories": [CategoryResponse.model_validate(cat)],
                 "category_name": cat.name,
             })
+
+    if event.city_id is not None:
+        if city_map is not None:
+            city = city_map.get(event.city_id)
+        else:
+            city = db.query(City).filter(City.id == event.city_id).first()
+        resp = resp.model_copy(update=_city_fields(city))
+    else:
+        resp = resp.model_copy(update=_city_fields(None))
 
     return resp
 
@@ -111,6 +144,7 @@ def _promo_rank(promotion_type_col):
 def get_events(
     organization_id: Optional[int] = None,
     category_id: Optional[int] = None,
+    city_id: Optional[int] = None,
     user_latitude: Optional[float] = None,
     user_longitude: Optional[float] = None,
     radius_km: float = 25,
@@ -148,10 +182,14 @@ def get_events(
             query = query.filter(Event.organization_id == organization_id)
         if cat_filter is not None:
             query = query.filter(cat_filter)
+        if city_id is not None:
+            query = query.filter(Event.city_id == city_id)
 
+        rows = query.all()
+        cities = _city_map([ev.city_id for ev, _, _ in rows], db)
         out = []
-        for event, dist_km, _ in query.all():
-            resp = _enrich(event, db)
+        for event, dist_km, _ in rows:
+            resp = _enrich(event, db, city_map=cities)
             resp = resp.model_copy(update={
                 "distance_km": round(float(dist_km), 2) if dist_km is not None else None
             })
@@ -163,7 +201,11 @@ def get_events(
         query = query.filter(Event.organization_id == organization_id)
     if cat_filter is not None:
         query = query.filter(cat_filter)
-    return [_enrich(e, db) for e in query.all()]
+    if city_id is not None:
+        query = query.filter(Event.city_id == city_id)
+    events = query.all()
+    cities = _city_map([ev.city_id for ev in events], db)
+    return [_enrich(e, db, city_map=cities) for e in events]
 
 
 @router.post("/", response_model=EventResponse)
@@ -183,11 +225,13 @@ def create_event(
     category_ids = event_data.pop("category_ids")
 
     _validate_category_ids(category_ids, db)
+    city_name_en = _validate_city_id(event_data.get("city_id"), db)
 
     # Keep legacy column as first category for backward compatibility
     event_data["category_id"] = category_ids[0]
 
-    lat, lng = geocode(event_data.get("address"), event_data.get("city"))
+    geocode_city = event_data.get("city") or city_name_en
+    lat, lng = geocode(event_data.get("address"), geocode_city)
     if lat is not None:
         event_data["latitude"] = lat
         event_data["longitude"] = lng
@@ -244,9 +288,16 @@ def update_event(
         # Keep legacy column in sync
         update_data["category_id"] = category_ids[0]
 
-    if "address" in update_data or "city" in update_data:
+    if "city_id" in update_data:
+        _validate_city_id(update_data["city_id"], db)
+
+    if "address" in update_data or "city" in update_data or "city_id" in update_data:
         new_address = update_data.get("address", event.address)
+        new_city_id = update_data.get("city_id", event.city_id)
         new_city = update_data.get("city", event.city)
+        if new_city is None and new_city_id is not None:
+            city_obj = db.query(City).filter(City.id == new_city_id).first()
+            new_city = city_obj.name_en if city_obj else None
         lat, lng = geocode(new_address, new_city)
         if lat is not None:
             update_data["latitude"] = lat

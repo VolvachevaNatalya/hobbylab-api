@@ -34,6 +34,7 @@ class Event(Base):
 
     address = Column(Text)
     city = Column(String(100))
+    city_id = Column(Integer, ForeignKey("cities.id"), nullable=True)
 
     latitude = Column(DECIMAL(10, 8))
     longitude = Column(DECIMAL(11, 8))

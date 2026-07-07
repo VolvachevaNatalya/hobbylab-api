@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, DECIMAL
+from sqlalchemy import Column, ForeignKey, Integer, String, Text, Boolean, DateTime, DECIMAL
 from sqlalchemy.sql import func
 from app.db.database import Base
 
@@ -27,6 +27,7 @@ class Organization(Base):
 
     address = Column(Text)
     city = Column(String(100))
+    city_id = Column(Integer, ForeignKey("cities.id"), nullable=True)
 
     latitude = Column(DECIMAL(10, 8))
     longitude = Column(DECIMAL(11, 8))
