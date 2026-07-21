@@ -38,8 +38,18 @@ print(f"Loaded {len(cities)} entries from {SEED_FILE.name}")
 engine = create_engine(DATABASE_URL)
 
 INSERT_SQL = text("""
-    INSERT INTO cities (name_he, name_en, name_ru)
-    VALUES (:name_he, :name_en, :name_ru)
+    INSERT INTO cities (
+        name_he,
+        name_en,
+        name_ru,
+        is_active
+    )
+    VALUES (
+        :name_he,
+        :name_en,
+        :name_ru,
+        TRUE
+    )
     ON CONFLICT DO NOTHING
 """)
 
