@@ -356,6 +356,11 @@ def update_organization(
 
     db.commit()
     db.refresh(organization)
+    print(
+        "AFTER SAVE:",
+        organization.city_id,
+        organization.city,
+    )
     cat_map = _category_map([organization.id], db)
     cities = _city_map([organization.city_id], db)
     resp = OrganizationResponse.model_validate(organization)
