@@ -322,6 +322,7 @@ def update_organization(
 
     update_data = org_update.model_dump(exclude_unset=True)
 
+    print("UPDATE DATA:", update_data)
     # Pop category_ids — not an Organization column, must be handled separately
     category_ids = update_data.pop("category_ids", None)
 
