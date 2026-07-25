@@ -183,7 +183,10 @@ def get_events(
         if cat_filter is not None:
             query = query.filter(cat_filter)
         if city_id is not None:
-            query = query.filter(Event.city_id == city_id)
+            query = query.filter(or_(
+                Event.city_id == city_id,
+                Event.is_nationwide.is_(True),
+            ))
 
         rows = query.all()
         cities = _city_map([ev.city_id for ev, _, _ in rows], db)
@@ -202,7 +205,10 @@ def get_events(
     if cat_filter is not None:
         query = query.filter(cat_filter)
     if city_id is not None:
-        query = query.filter(Event.city_id == city_id)
+        query = query.filter(or_(
+            Event.city_id == city_id,
+            Event.is_nationwide.is_(True),
+        ))
     events = query.all()
     cities = _city_map([ev.city_id for ev in events], db)
     return [_enrich(e, db, city_map=cities) for e in events]
