@@ -66,6 +66,8 @@ def _build_class_response(class_obj, org_name, cat_name, distance_km=None):
 @router.get("/", response_model=List[ClassResponse])
 def get_classes(
     organization_id: Optional[int] = None,
+    category_id: Optional[int] = None,
+    city_id: Optional[int] = None,
     user_latitude: Optional[float] = None,
     user_longitude: Optional[float] = None,
     radius_km: float = 25,
@@ -105,6 +107,11 @@ def get_classes(
         )
         if organization_id is not None:
             query = query.filter(Class.organization_id == organization_id)
+        if category_id is not None:
+            query = query.filter(Class.category_id == category_id)
+
+        if city_id is not None:
+            query = query.filter(Organization.city_id == city_id)
 
         return [
             _build_class_response(c, org_name, cat_name, round(float(d), 2))
@@ -119,6 +126,11 @@ def get_classes(
     )
     if organization_id is not None:
         query = query.filter(Class.organization_id == organization_id)
+    if category_id is not None:
+        query = query.filter(Class.category_id == category_id)
+
+    if city_id is not None:
+        query = query.filter(Organization.city_id == city_id)
     return [_build_class_response(c, org_name, cat_name) for c, org_name, cat_name in query.all()]
 
 
