@@ -32,6 +32,7 @@ from app.models.organization_join_request import OrganizationJoinRequest  # noqa
 from app.models.event_category import EventCategory  # noqa: F401 – ensures table is created
 from app.models.organization_category import OrganizationCategory  # noqa: F401 – ensures table is created
 from app.models.city import City  # noqa: F401 – ensures table is created
+from app.models.event_series import EventSeries  # noqa: F401 – ensures table is created
 Base.metadata.create_all(bind=engine)
 
 # Add columns introduced after initial schema creation

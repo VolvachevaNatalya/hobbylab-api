@@ -44,6 +44,7 @@ import app.models.organization_join_request  # noqa: F401
 import app.models.event_category             # noqa: F401
 import app.models.organization_category      # noqa: F401
 import app.models.city                      # noqa: F401
+import app.models.event_series               # noqa: F401
 
 # Minimal app containing only the organizations router — avoids importing
 # modules with Python-3.9-only syntax (e.g. upload.py) on this 3.8 runtime.

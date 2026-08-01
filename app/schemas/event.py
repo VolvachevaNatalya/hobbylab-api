@@ -1,9 +1,11 @@
-from pydantic import BaseModel, field_validator, model_validator
-from typing import List, Optional
 from datetime import datetime
 from decimal import Decimal
+from typing import List, Optional
+
+from pydantic import BaseModel, field_validator, model_validator
 
 from app.schemas.category import CategoryResponse
+from app.schemas.event_series import RecurrenceCreate, RecurrenceResponse
 
 
 class EventCreate(BaseModel):
@@ -36,6 +38,8 @@ class EventCreate(BaseModel):
     is_nationwide: bool = False
     price: Optional[float] = None
     price_comment: Optional[str] = None
+
+    recurrence: Optional[RecurrenceCreate] = None
 
     @model_validator(mode='after')
     def resolve_and_validate_categories(self) -> 'EventCreate':
@@ -90,6 +94,12 @@ class EventResponse(BaseModel):
     status: str
     distance_km: Optional[float] = None
 
+    # Recurrence fields
+    series_id: Optional[int] = None
+    occurrence_index: Optional[int] = None
+    original_start_datetime: Optional[datetime] = None
+    recurrence: Optional[RecurrenceResponse] = None
+
     # Joined fields
     organization_name: Optional[str] = None
     category_name: Optional[str] = None
@@ -125,6 +135,7 @@ class EventUpdate(BaseModel):
     price: Optional[float] = None
     price_comment: Optional[str] = None
     category_ids: Optional[List[int]] = None
+    recurrence: Optional[RecurrenceCreate] = None
 
     @field_validator("category_ids")
     @classmethod

@@ -1,5 +1,6 @@
 from sqlalchemy import Boolean, Column, Integer, String, Text, ForeignKey, DateTime, DECIMAL
 from sqlalchemy.sql import func
+
 from app.db.database import Base
 
 
@@ -47,3 +48,7 @@ class Event(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     status = Column(String(50), server_default="active")
+
+    series_id = Column(Integer, ForeignKey("event_series.id", ondelete="SET NULL"), nullable=True)
+    occurrence_index = Column(Integer, nullable=True)
+    original_start_datetime = Column(DateTime, nullable=True)
