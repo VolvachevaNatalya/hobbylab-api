@@ -55,7 +55,7 @@ def _event_body(org_id, category_ids, **kwargs):
     body = {
         "organization_id": org_id,
         "title": "Test Event",
-        "start_datetime": "2026-08-01T10:00:00",
+        "start_datetime": "2099-01-01T10:00:00",
         "category_ids": category_ids,
     }
     body.update(kwargs)
@@ -499,7 +499,7 @@ def test_filter_legacy_event_without_junction_rows_is_found(client, db):
         organization_id=org.id,
         category_id=cat.id,
         title="Old Event",
-        start_datetime=datetime(2026, 8, 1),
+        start_datetime=datetime(2099, 1, 1),
     )
     db.add(event)
     db.commit()
@@ -561,6 +561,48 @@ def test_event_categories_pk_enforces_idempotency(client, db):
 
 
 # ── Legacy event fallback ─────────────────────────────────────────────────────
+
+# ── include_past filter ───────────────────────────────────────────────────────
+
+def test_list_events_excludes_past_by_default(client, db):
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "Filter")
+
+    past = Event(organization_id=org.id, category_id=cat.id, title="Past Event",
+                 start_datetime=datetime(2020, 1, 1, 10, 0))
+    future = Event(organization_id=org.id, category_id=cat.id, title="Future Event",
+                   start_datetime=datetime(2099, 1, 1, 10, 0))
+    db.add_all([past, future])
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id})
+    assert resp.status_code == 200
+    titles = [e["title"] for e in resp.json()]
+    assert "Future Event" in titles
+    assert "Past Event" not in titles
+
+
+def test_list_events_include_past_shows_all(client, db):
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "Filter2")
+
+    past = Event(organization_id=org.id, category_id=cat.id, title="Past Event2",
+                 start_datetime=datetime(2020, 1, 1, 10, 0))
+    future = Event(organization_id=org.id, category_id=cat.id, title="Future Event2",
+                   start_datetime=datetime(2099, 1, 1, 10, 0))
+    db.add_all([past, future])
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id, "include_past": "true"})
+    assert resp.status_code == 200
+    titles = [e["title"] for e in resp.json()]
+    assert "Future Event2" in titles
+    assert "Past Event2" in titles
+
 
 def test_legacy_event_without_junction_rows_returns_categories(client, db):
     """Events with category_id but no event_categories rows (pre-backfill) still

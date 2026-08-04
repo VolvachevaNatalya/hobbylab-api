@@ -588,6 +588,7 @@ def get_events(
     user_latitude: Optional[float] = None,
     user_longitude: Optional[float] = None,
     radius_km: float = 25,
+    include_past: bool = False,
     db: Session = Depends(get_db),
 ):
     cat_filter = _category_filter(category_id)
@@ -627,6 +628,8 @@ def get_events(
                 Event.city_id == city_id,
                 Event.is_nationwide.is_(True),
             ))
+        if not include_past:
+            query = query.filter(Event.start_datetime >= now)
 
         rows = query.all()
         cities = _city_map([ev.city_id for ev, _, _ in rows], db)
@@ -640,6 +643,7 @@ def get_events(
             out.append(resp)
         return out
 
+    now = datetime.utcnow()
     query = db.query(Event)
     if organization_id is not None:
         query = query.filter(Event.organization_id == organization_id)
@@ -650,6 +654,8 @@ def get_events(
             Event.city_id == city_id,
             Event.is_nationwide.is_(True),
         ))
+    if not include_past:
+        query = query.filter(Event.start_datetime >= now)
     events = query.order_by(Event.start_datetime.asc()).all()
     cities = _city_map([ev.city_id for ev in events], db)
     smap = _series_map([ev.series_id for ev in events], db)
