@@ -307,13 +307,16 @@ def _create_occurrences(
 
 def _update_single(
     event: Event, update_data: dict, category_ids: Optional[List[int]],
-    recurrence: Optional[RecurrenceCreate], db: Session,
+    recurrence: Optional[RecurrenceCreate], remove_recurrence: bool, db: Session,
 ) -> EventResponse:
     if recurrence is not None:
         raise HTTPException(
             status_code=400,
             detail="recurrence cannot be changed for scope=single; use scope=future or scope=series",
         )
+    if remove_recurrence and event.series_id is not None:
+        event.series_id = None
+        event.occurrence_index = None
     if category_ids is not None:
         _validate_category_ids(category_ids, db)
         _replace_single_event_categories(event.id, category_ids, db)
@@ -379,6 +382,54 @@ def _split_future_no_recurrence(
     return _enrich(refreshed, db)
 
 
+def _detach_future_remove_recurrence(
+    event: Event, original_series: EventSeries, from_index: int, last_remaining_start,
+    update_data: dict, category_ids: Optional[List[int]], db: Session,
+) -> EventResponse:
+    """Remove recurrence from from_index forward (scope=future + Does not repeat).
+
+    Detaches the selected occurrence as a standalone event and deletes all later
+    generated occurrences. Trims the original series to end before from_index.
+    """
+    old_sid = original_series.id
+
+    # Delete all occurrences strictly after the selected one
+    later_ids = [
+        r.id for r in db.query(Event.id).filter(
+            Event.series_id == old_sid,
+            Event.occurrence_index > from_index,
+        ).all()
+    ]
+    _delete_event_rows(later_ids, db)
+
+    # Apply field changes to the selected occurrence before detaching
+    if category_ids is not None:
+        _validate_category_ids(category_ids, db)
+        _replace_single_event_categories(event.id, category_ids, db)
+        update_data["category_id"] = category_ids[0]
+    _geocode_if_changed(update_data, event, db)
+    for key, value in update_data.items():
+        setattr(event, key, value)
+
+    # Detach selected occurrence from the series
+    event.series_id = None
+    event.occurrence_index = None
+
+    # Trim the original series to events before from_index
+    adjust_original_series_after_split(original_series, from_index, last_remaining_start)
+    if from_index == 0:
+        db.delete(original_series)
+    else:
+        max_start = db.query(func.max(Event.start_datetime)).filter(
+            Event.series_id == old_sid
+        ).scalar()
+        original_series.generated_until = max_start
+
+    db.commit()
+    db.refresh(event)
+    return _enrich(event, db)
+
+
 def _split_future_with_new_recurrence(
     event: Event, original_series: EventSeries, from_index: int, last_remaining_start,
     update_data: dict, category_ids: Optional[List[int]],
@@ -429,7 +480,7 @@ def _split_future_with_new_recurrence(
 
 def _update_future(
     event: Event, update_data: dict, category_ids: Optional[List[int]],
-    recurrence: Optional[RecurrenceCreate], db: Session,
+    recurrence: Optional[RecurrenceCreate], remove_recurrence: bool, db: Session,
 ) -> EventResponse:
     # Standalone event — no recurrence allowed; preserve original behavior (no geocoding)
     if event.series_id is None:
@@ -451,11 +502,6 @@ def _update_future(
     original_series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
     from_index = event.occurrence_index or 0
 
-    remaining_count = db.query(func.count(Event.id)).filter(
-        Event.series_id == event.series_id,
-        Event.occurrence_index >= from_index,
-    ).scalar()
-
     last_remaining_start = (
         db.query(Event.start_datetime).filter(
             Event.series_id == original_series.id,
@@ -463,6 +509,18 @@ def _update_future(
         ).scalar()
         if from_index > 0 else None
     )
+
+    # Explicit recurrence removal: detach selected occurrence, delete later ones, trim series
+    if remove_recurrence:
+        return _detach_future_remove_recurrence(
+            event, original_series, from_index, last_remaining_start,
+            update_data, category_ids, db,
+        )
+
+    remaining_count = db.query(func.count(Event.id)).filter(
+        Event.series_id == event.series_id,
+        Event.occurrence_index >= from_index,
+    ).scalar()
 
     # Edge case: only one future occurrence → detach as standalone instead of forming a new series
     if remaining_count == 1:
@@ -544,9 +602,51 @@ def _regenerate_full_series(
     return _enrich(new_events[0], db)
 
 
+def _remove_series_detach_all(
+    event: Event, original_series: EventSeries,
+    update_data: dict, category_ids: Optional[List[int]], db: Session,
+) -> EventResponse:
+    """Remove recurrence from entire series (scope=series + Does not repeat).
+
+    All occurrences become standalone events; none are deleted. The EventSeries row
+    is removed. Shared field changes are applied to every formerly-series event.
+    """
+    series_id = original_series.id
+
+    # Snapshot IDs while series_id is still intact
+    all_ids = [r.id for r in db.query(Event.id).filter(Event.series_id == series_id).all()]
+
+    # Apply geocoding (uses clicked event as location template)
+    _geocode_if_changed(update_data, event, db)
+
+    # Apply category updates to all events before detaching
+    if category_ids is not None:
+        _validate_category_ids(category_ids, db)
+        _replace_series_categories(series_id, category_ids, db)
+        update_data["category_id"] = category_ids[0]
+
+    # Apply shared field updates to all events
+    bulk = {k: v for k, v in update_data.items() if k in _SHARED_EVENT_FIELDS or k == "category_id"}
+    if bulk:
+        db.query(Event).filter(Event.id.in_(all_ids)).update(bulk, synchronize_session=False)
+
+    # Detach all events from the series
+    db.query(Event).filter(Event.series_id == series_id).update(
+        {"series_id": None, "occurrence_index": None},
+        synchronize_session=False,
+    )
+
+    # Delete the EventSeries row
+    db.delete(original_series)
+
+    db.commit()
+    db.refresh(event)
+    return _enrich(event, db)
+
+
 def _update_series(
     event: Event, update_data: dict, category_ids: Optional[List[int]],
-    recurrence: Optional[RecurrenceCreate], db: Session,
+    recurrence: Optional[RecurrenceCreate], remove_recurrence: bool, db: Session,
 ) -> EventResponse:
     # Standalone event — no recurrence allowed; preserve original behavior (no geocoding)
     if event.series_id is None:
@@ -566,6 +666,10 @@ def _update_series(
         return _enrich(event, db)
 
     original_series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
+
+    # Explicit recurrence removal: detach all occurrences as standalone, delete the series row
+    if remove_recurrence:
+        return _remove_series_detach_all(event, original_series, update_data, category_ids, db)
 
     if recurrence is not None or "start_datetime" in update_data:
         return _regenerate_full_series(event, original_series, update_data, category_ids, recurrence, db)
@@ -759,15 +863,18 @@ def update_event(
         raise HTTPException(status_code=403, detail="No permission")
 
     recurrence: Optional[RecurrenceCreate] = event_update.recurrence
+    remove_recurrence: bool = (
+        "recurrence" in event_update.model_fields_set and event_update.recurrence is None
+    )
     update_data = event_update.model_dump(exclude_unset=True)
     category_ids: Optional[List[int]] = update_data.pop("category_ids", None)
     update_data.pop("recurrence", None)
 
     if scope == "single":
-        return _update_single(event, update_data, category_ids, recurrence, db)
+        return _update_single(event, update_data, category_ids, recurrence, remove_recurrence, db)
     if scope == "future":
-        return _update_future(event, update_data, category_ids, recurrence, db)
-    return _update_series(event, update_data, category_ids, recurrence, db)
+        return _update_future(event, update_data, category_ids, recurrence, remove_recurrence, db)
+    return _update_series(event, update_data, category_ids, recurrence, remove_recurrence, db)
 
 
 @router.delete("/{event_id}")
