@@ -626,50 +626,57 @@ def _make_recurring_series(client, db, org_id, cat_id, user_id, count=3):
     return [r.id for r in rows], series_id
 
 
-def test_remove_recurrence_scope_single_detaches_occurrence(client, db):
-    """PUT with recurrence=null + scope=single detaches that occurrence; others stay in series."""
+def test_remove_recurrence_keeps_target_deletes_others(client, db):
+    """Removing recurrence (recurrence=null) keeps only the edited occurrence; all siblings deleted."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db, "Dance")
 
-    event_ids, series_id = _make_recurring_series(client, db, org.id, cat.id, user.id, count=3)
-    target_id = event_ids[1]  # middle occurrence
+    event_ids, series_id = _make_recurring_series(client, db, org.id, cat.id, user.id, count=5)
+    target_id = event_ids[2]  # middle occurrence
+    sibling_ids = [eid for eid in event_ids if eid != target_id]
 
     resp = client.put(
         f"/events/{target_id}?scope=single",
-        json={"recurrence": None},
+        json={"recurrence": None, "title": "Standalone Now"},
         headers=_auth(user.id),
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["series_id"] is None
     assert data["recurrence"] is None
+    assert data["title"] == "Standalone Now"
 
     from app.models.event import Event as EventModel
     from app.models.event_series import EventSeries
 
     db.expire_all()
-    # Other two occurrences still belong to the series
-    remaining = db.query(EventModel).filter(EventModel.series_id == series_id).all()
-    assert len(remaining) == 2
-    assert all(e.id != target_id for e in remaining)
-    # Series row still exists
-    assert db.query(EventSeries).filter(EventSeries.id == series_id).first() is not None
+    # Target still exists and is detached
+    target = db.query(EventModel).filter(EventModel.id == target_id).first()
+    assert target is not None
+    assert target.series_id is None
+    assert target.occurrence_index is None
+    # All siblings are deleted
+    assert db.query(EventModel).filter(EventModel.id.in_(sibling_ids)).count() == 0
+    # EventSeries row is deleted
+    assert db.query(EventSeries).filter(EventSeries.id == series_id).first() is None
+    # Only 1 event visible for this org
+    list_resp = client.get(f"/events/?organization_id={org.id}&include_past=true")
+    assert len(list_resp.json()) == 1
 
 
-def test_remove_recurrence_scope_future_detaches_and_deletes(client, db):
-    """PUT with recurrence=null + scope=future detaches selected, deletes later, trims series."""
+def test_remove_recurrence_scope_is_ignored(client, db):
+    """scope parameter has no effect when removing recurrence; result is always keep-one."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db, "Music")
 
     event_ids, series_id = _make_recurring_series(client, db, org.id, cat.id, user.id, count=3)
-    # occurrence indices: 0, 1, 2  →  target index 1 (middle)
-    target_id = event_ids[1]
-    last_id = event_ids[2]
+    target_id = event_ids[0]  # first occurrence, scope=future would normally only affect from here
 
+    # Use scope=future — should behave identically to scope=single (keep target, delete others)
     resp = client.put(
         f"/events/{target_id}?scope=future",
         json={"recurrence": None},
@@ -684,56 +691,36 @@ def test_remove_recurrence_scope_future_detaches_and_deletes(client, db):
     from app.models.event_series import EventSeries
 
     db.expire_all()
-    # Occurrence 0 remains in original series
-    remaining = db.query(EventModel).filter(EventModel.series_id == series_id).all()
-    assert len(remaining) == 1
-    assert remaining[0].id == event_ids[0]
-    # Occurrence 2 is deleted
-    assert db.query(EventModel).filter(EventModel.id == last_id).first() is None
-    # Series row still exists (has occurrence 0)
-    assert db.query(EventSeries).filter(EventSeries.id == series_id).first() is not None
-    # Total events via API: occurrence 0 (in series) + target (standalone) = 2
+    # Only target survives; siblings deleted; series gone
+    assert db.query(EventModel).filter(EventModel.id == target_id).first() is not None
+    assert db.query(EventModel).filter(EventModel.series_id == series_id).count() == 0
+    assert db.query(EventSeries).filter(EventSeries.id == series_id).first() is None
     list_resp = client.get(f"/events/?organization_id={org.id}&include_past=true")
-    assert len(list_resp.json()) == 2
+    assert len(list_resp.json()) == 1
 
 
-def test_remove_recurrence_scope_series_detaches_all(client, db):
-    """PUT with recurrence=null + scope=series converts all occurrences to standalone, deletes series row."""
+def test_remove_recurrence_on_standalone_is_noop(client, db):
+    """PUT with recurrence=null on a standalone (non-recurring) event is a no-op for series fields."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db, "Art")
 
-    event_ids, series_id = _make_recurring_series(client, db, org.id, cat.id, user.id, count=3)
+    body = _event_body(org.id, [cat.id], start_datetime="2099-09-01T10:00:00")
+    create_resp = client.post("/events/", json=body, headers=_auth(user.id))
+    assert create_resp.status_code == 200
+    event_id = create_resp.json()["id"]
 
     resp = client.put(
-        f"/events/{event_ids[0]}?scope=series",
-        json={"recurrence": None},
+        f"/events/{event_id}",
+        json={"recurrence": None, "title": "Still Standalone"},
         headers=_auth(user.id),
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["series_id"] is None
     assert data["recurrence"] is None
-
-    from app.models.event import Event as EventModel
-    from app.models.event_series import EventSeries
-
-    db.expire_all()
-    # All 3 events still exist
-    for eid in event_ids:
-        e = db.query(EventModel).filter(EventModel.id == eid).first()
-        assert e is not None
-        assert e.series_id is None
-        assert e.occurrence_index is None
-    # EventSeries row is deleted
-    assert db.query(EventSeries).filter(EventSeries.id == series_id).first() is None
-    # All 3 events visible via API (include_past=true since they're in 2099, actually upcoming)
-    list_resp = client.get(f"/events/?organization_id={org.id}&include_past=true")
-    events = list_resp.json()
-    assert len(events) == 3
-    assert all(e["series_id"] is None for e in events)
-    assert all(e["recurrence"] is None for e in events)
+    assert data["title"] == "Still Standalone"
 
 
 def test_legacy_event_without_junction_rows_returns_categories(client, db):

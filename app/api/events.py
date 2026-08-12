@@ -644,6 +644,51 @@ def _remove_series_detach_all(
     return _enrich(event, db)
 
 
+def _remove_series_keep_one(
+    event: Event, original_series: Optional[EventSeries],
+    update_data: dict, category_ids: Optional[List[int]], db: Session,
+) -> EventResponse:
+    """Keep only the edited occurrence; delete all siblings and the EventSeries row."""
+    if original_series is None:
+        # Defensive: series already gone — just apply edits and detach
+        event.series_id = None
+        event.occurrence_index = None
+        if category_ids is not None:
+            _validate_category_ids(category_ids, db)
+            _replace_single_event_categories(event.id, category_ids, db)
+            update_data["category_id"] = category_ids[0]
+        for key, value in update_data.items():
+            setattr(event, key, value)
+        db.commit()
+        db.refresh(event)
+        return _enrich(event, db)
+
+    series_id = original_series.id
+    _geocode_if_changed(update_data, event, db)
+
+    if category_ids is not None:
+        _validate_category_ids(category_ids, db)
+        _replace_single_event_categories(event.id, category_ids, db)
+        update_data["category_id"] = category_ids[0]
+
+    # Delete all other occurrences before detaching the target
+    db.query(Event).filter(
+        Event.series_id == series_id,
+        Event.id != event.id,
+    ).delete(synchronize_session=False)
+
+    # Detach and apply edits to the target
+    event.series_id = None
+    event.occurrence_index = None
+    for key, value in update_data.items():
+        setattr(event, key, value)
+
+    db.delete(original_series)
+    db.commit()
+    db.refresh(event)
+    return _enrich(event, db)
+
+
 def _update_series(
     event: Event, update_data: dict, category_ids: Optional[List[int]],
     recurrence: Optional[RecurrenceCreate], remove_recurrence: bool, db: Session,
@@ -874,6 +919,12 @@ def update_event(
     update_data = event_update.model_dump(exclude_unset=True)
     category_ids: Optional[List[int]] = update_data.pop("category_ids", None)
     update_data.pop("recurrence", None)
+
+    # Removing recurrence: keep only this occurrence, delete all siblings, delete series.
+    # Scope is irrelevant for this operation.
+    if remove_recurrence and event.series_id is not None:
+        original_series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
+        return _remove_series_keep_one(event, original_series, update_data, category_ids, db)
 
     if scope == "single":
         return _update_single(event, update_data, category_ids, recurrence, remove_recurrence, db)
