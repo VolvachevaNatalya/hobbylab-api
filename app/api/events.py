@@ -687,6 +687,7 @@ def _update_series(
 @router.get("/", response_model=List[EventResponse])
 def get_events(
     organization_id: Optional[int] = None,
+    series_id: Optional[int] = None,
     category_id: Optional[int] = None,
     city_id: Optional[int] = None,
     user_latitude: Optional[float] = None,
@@ -725,6 +726,8 @@ def get_events(
         )
         if organization_id is not None:
             query = query.filter(Event.organization_id == organization_id)
+        if series_id is not None:
+            query = query.filter(Event.series_id == series_id)
         if cat_filter is not None:
             query = query.filter(cat_filter)
         if city_id is not None:
@@ -751,6 +754,8 @@ def get_events(
     query = db.query(Event)
     if organization_id is not None:
         query = query.filter(Event.organization_id == organization_id)
+    if series_id is not None:
+        query = query.filter(Event.series_id == series_id)
     if cat_filter is not None:
         query = query.filter(cat_filter)
     if city_id is not None:

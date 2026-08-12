@@ -761,3 +761,64 @@ def test_legacy_event_without_junction_rows_returns_categories(client, db):
     assert data["category_name"] == "Legacy"
     assert len(data["categories"]) == 1
     assert data["categories"][0]["name"] == "Legacy"
+
+
+def test_series_id_filter_returns_only_that_series(client, db):
+    """GET /events/?series_id=X returns only occurrences of that series."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "Filter")
+
+    event_ids_a, series_id_a = _make_recurring_series(
+        client, db, org.id, cat.id, user.id, count=3
+    )
+    event_ids_b, series_id_b = _make_recurring_series(
+        client, db, org.id, cat.id, user.id, count=2
+    )
+
+    resp = client.get(f"/events/?series_id={series_id_a}&include_past=true")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 3
+    assert all(e["series_id"] == series_id_a for e in data)
+    returned_ids = {e["id"] for e in data}
+    assert returned_ids == set(event_ids_a)
+
+
+def test_change_recurrence_series_updates_schedule(client, db):
+    """Changing frequency from daily to weekly via scope=series is reflected in GET /events/?series_id=X."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "Regression")
+
+    body = _event_body(
+        org.id,
+        [cat.id],
+        start_datetime="2099-07-01T09:00:00",
+        recurrence={"frequency": "daily", "interval": 1, "end_type": "count", "total_count": 3},
+    )
+    resp = client.post("/events/", json=body, headers=_auth(user.id))
+    assert resp.status_code == 200
+    first = resp.json()
+    series_id = first["series_id"]
+    first_id = first["id"]
+
+    update = client.put(
+        f"/events/{first_id}?scope=series",
+        json={"recurrence": {"frequency": "weekly", "interval": 1, "end_type": "count", "total_count": 3}},
+        headers=_auth(user.id),
+    )
+    assert update.status_code == 200
+
+    schedule = client.get(f"/events/?series_id={series_id}&include_past=true")
+    assert schedule.status_code == 200
+    occurrences = sorted(schedule.json(), key=lambda e: e["start_datetime"])
+    assert len(occurrences) == 3
+
+    from datetime import timedelta
+    dates = [datetime.fromisoformat(e["start_datetime"]) for e in occurrences]
+    for i in range(1, len(dates)):
+        gap = dates[i] - dates[i - 1]
+        assert gap == timedelta(weeks=1), f"Expected 7-day gap, got {gap}"
