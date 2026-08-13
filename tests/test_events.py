@@ -809,3 +809,135 @@ def test_change_recurrence_series_updates_schedule(client, db):
     for i in range(1, len(dates)):
         gap = dates[i] - dates[i - 1]
         assert gap == timedelta(weeks=1), f"Expected 7-day gap, got {gap}"
+
+
+# ── STANDALONE → RECURRING conversion ────────────────────────────────────────
+
+def test_convert_standalone_to_series_preserves_event_id(client, db):
+    """Existing standalone event becomes occurrence 0; its id is preserved."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "Yoga")
+
+    create_resp = client.post(
+        "/events/",
+        json=_event_body(org.id, [cat.id], start_datetime="2099-03-10T09:00:00"),
+        headers=_auth(user.id),
+    )
+    assert create_resp.status_code == 200
+    original_id = create_resp.json()["id"]
+
+    put_resp = client.put(
+        f"/events/{original_id}",
+        json={"recurrence": {"frequency": "daily", "interval": 1, "end_type": "count", "total_count": 3}},
+        headers=_auth(user.id),
+    )
+    assert put_resp.status_code == 200
+    data = put_resp.json()
+
+    # The returned event is still the same row
+    assert data["id"] == original_id
+    assert data["occurrence_index"] == 0
+    assert data["series_id"] is not None
+    assert data["recurrence"] is not None
+    assert data["recurrence"]["frequency"] == "daily"
+
+    series_id = data["series_id"]
+
+    from app.models.event import Event as EventModel
+    from app.models.event_series import EventSeries
+
+    db.expire_all()
+    event0 = db.query(EventModel).filter(EventModel.id == original_id).first()
+    assert event0 is not None
+    assert event0.series_id == series_id
+    assert event0.occurrence_index == 0
+    assert event0.original_start_datetime is not None
+
+    # Series row exists
+    series = db.query(EventSeries).filter(EventSeries.id == series_id).first()
+    assert series is not None
+    assert series.frequency == "daily"
+
+    # All 3 occurrences exist and are ordered correctly
+    all_events = (
+        db.query(EventModel)
+        .filter(EventModel.series_id == series_id)
+        .order_by(EventModel.occurrence_index)
+        .all()
+    )
+    assert len(all_events) == 3
+    assert all_events[0].id == original_id
+    assert all_events[0].occurrence_index == 0
+    assert all_events[1].occurrence_index == 1
+    assert all_events[2].occurrence_index == 2
+
+    from datetime import timedelta
+    assert all_events[1].start_datetime - all_events[0].start_datetime == timedelta(days=1)
+    assert all_events[2].start_datetime - all_events[1].start_datetime == timedelta(days=1)
+
+
+def test_convert_standalone_with_field_edits(client, db):
+    """Field edits applied during conversion propagate to all occurrences."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "Pilates")
+
+    create_resp = client.post(
+        "/events/",
+        json=_event_body(org.id, [cat.id], start_datetime="2099-05-01T10:00:00", title="Old Title"),
+        headers=_auth(user.id),
+    )
+    original_id = create_resp.json()["id"]
+
+    put_resp = client.put(
+        f"/events/{original_id}",
+        json={
+            "title": "New Title",
+            "recurrence": {"frequency": "weekly", "interval": 1, "end_type": "count", "total_count": 4},
+        },
+        headers=_auth(user.id),
+    )
+    assert put_resp.status_code == 200
+    assert put_resp.json()["title"] == "New Title"
+
+    from app.models.event import Event as EventModel
+    db.expire_all()
+    series_id = put_resp.json()["series_id"]
+    all_events = db.query(EventModel).filter(EventModel.series_id == series_id).all()
+    assert len(all_events) == 4
+    assert all(e.title == "New Title" for e in all_events)
+
+
+def test_convert_standalone_scope_is_ignored(client, db):
+    """scope parameter has no effect when converting a standalone event to recurring."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "Boxing")
+
+    create_resp = client.post(
+        "/events/",
+        json=_event_body(org.id, [cat.id], start_datetime="2099-07-15T08:00:00"),
+        headers=_auth(user.id),
+    )
+    original_id = create_resp.json()["id"]
+
+    # Use scope=single, which would normally block recurrence changes — should be ignored
+    put_resp = client.put(
+        f"/events/{original_id}?scope=single",
+        json={"recurrence": {"frequency": "monthly", "interval": 1, "end_type": "count", "total_count": 2}},
+        headers=_auth(user.id),
+    )
+    assert put_resp.status_code == 200
+    data = put_resp.json()
+    assert data["id"] == original_id
+    assert data["series_id"] is not None
+    assert data["occurrence_index"] == 0
+
+    from app.models.event import Event as EventModel
+    db.expire_all()
+    count = db.query(EventModel).filter(EventModel.series_id == data["series_id"]).count()
+    assert count == 2

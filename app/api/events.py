@@ -281,10 +281,11 @@ def _create_occurrences(
     category_ids: List[int],
     series_id: int,
     duration=None,
+    start_index: int = 0,
 ) -> List[Event]:
     """Insert Event rows and their EventCategory rows for each occurrence datetime."""
     new_events = []
-    for i, dt in enumerate(dates):
+    for i, dt in enumerate(dates, start=start_index):
         end_dt = dt + duration if duration is not None else None
         evt = Event(
             **shared_fields,
@@ -689,6 +690,67 @@ def _remove_series_keep_one(
     return _enrich(event, db)
 
 
+def _convert_standalone_to_series(
+    event: Event, update_data: dict, category_ids: Optional[List[int]],
+    recurrence: RecurrenceCreate, db: Session,
+) -> EventResponse:
+    """Convert a standalone event into occurrence 0 of a new recurring series.
+
+    The existing Event row is preserved in-place (id, relations, categories).
+    Only the remaining occurrences (indices 1…N-1) are created as new rows.
+    """
+    _geocode_if_changed(update_data, event, db)
+
+    # Apply any edited fields to the existing event row
+    for key, value in update_data.items():
+        setattr(event, key, value)
+
+    # Update or preserve categories
+    if category_ids is not None:
+        _validate_category_ids(category_ids, db)
+        _replace_single_event_categories(event.id, category_ids, db)
+        event.category_id = category_ids[0]
+        final_cats = category_ids
+    else:
+        final_cats = _get_event_category_ids(event.id, event.category_id, db)
+
+    # Create the series row
+    series = EventSeries(
+        frequency=recurrence.frequency,
+        interval=recurrence.interval,
+        end_type=recurrence.end_type,
+        total_count=recurrence.total_count,
+        end_date=recurrence.end_date,
+    )
+    db.add(series)
+    db.flush()
+
+    # Attach the existing event as occurrence 0
+    event.series_id = series.id
+    event.occurrence_index = 0
+    event.original_start_datetime = event.start_datetime
+    db.flush()
+
+    # Generate all dates from the event's (possibly updated) start datetime
+    start = event.start_datetime
+    duration = _compute_duration(event, {})
+    dates = generate_dates(recurrence, start)
+
+    # Build shared fields from the now-updated event
+    shared = _build_shared_fields(event, {})
+
+    # Create occurrences 1…N-1 (occurrence 0 is the preserved event)
+    if len(dates) > 1:
+        _create_occurrences(
+            db, dates[1:], shared, final_cats, series.id, duration, start_index=1
+        )
+
+    series.generated_until = dates[-1]
+    db.commit()
+    db.refresh(event)
+    return _enrich(event, db)
+
+
 def _update_series(
     event: Event, update_data: dict, category_ids: Optional[List[int]],
     recurrence: Optional[RecurrenceCreate], remove_recurrence: bool, db: Session,
@@ -925,6 +987,11 @@ def update_event(
     if remove_recurrence and event.series_id is not None:
         original_series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
         return _remove_series_keep_one(event, original_series, update_data, category_ids, db)
+
+    # Adding recurrence to a standalone event: convert it to a series in-place.
+    # Scope is irrelevant — the existing event always becomes occurrence 0.
+    if recurrence is not None and event.series_id is None:
+        return _convert_standalone_to_series(event, update_data, category_ids, recurrence, db)
 
     if scope == "single":
         return _update_single(event, update_data, category_ids, recurrence, remove_recurrence, db)
