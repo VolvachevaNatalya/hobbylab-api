@@ -447,6 +447,11 @@ def _split_future_with_new_recurrence(
     duration = _compute_duration(event, update_data)
     shared = _build_shared_fields(event, update_data)
 
+    # Capture the original total_count NOW — adjust_original_series_after_split will
+    # mutate original_series.total_count to from_index, so we must read it first.
+    original_total_count = original_series.total_count
+    original_end_type = original_series.end_type
+
     future_ids = [
         r.id for r in db.query(Event.id).filter(
             Event.series_id == original_series.id,
@@ -460,17 +465,36 @@ def _split_future_with_new_recurrence(
         db.delete(original_series)
         db.flush()
 
+    # For count-based splits: if the client echoed back the original total_count
+    # unchanged, the new series should contain only the remaining occurrences
+    # (original_total_count - from_index). If the user explicitly sent a different
+    # count, that value is used as-is.
+    effective_count = recurrence.total_count
+    if (
+        recurrence.end_type == "count"
+        and original_end_type == "count"
+        and recurrence.total_count == original_total_count
+    ):
+        effective_count = original_total_count - from_index
+
+    # Use the adjusted count for both date generation and the series row.
+    generation_rule = (
+        recurrence.model_copy(update={"total_count": effective_count})
+        if recurrence.end_type == "count" and effective_count != recurrence.total_count
+        else recurrence
+    )
+
     new_series = EventSeries(
         frequency=recurrence.frequency,
         interval=recurrence.interval,
         end_type=recurrence.end_type,
-        total_count=recurrence.total_count,
+        total_count=effective_count,
         end_date=recurrence.end_date,
     )
     db.add(new_series)
     db.flush()
 
-    dates = generate_dates(recurrence, new_start)
+    dates = generate_dates(generation_rule, new_start)
     new_events = _create_occurrences(db, dates, shared, final_cats, new_series.id, duration)
     new_series.generated_until = dates[-1]
 

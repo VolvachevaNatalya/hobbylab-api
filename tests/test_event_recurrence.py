@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 
 import pytest
+from app.models.event_series import EventSeries
 
 from app.core.security import create_access_token
 from app.models.category import Category
@@ -207,7 +208,7 @@ def test_list_events_includes_recurrence(client, db):
     body = _event_body(org.id, [cat.id], recurrence=_recurrence("weekly", 1, "count", total_count=2))
     client.post("/events/", json=body, headers=_auth(user.id))
 
-    resp = client.get("/events/", params={"organization_id": org.id})
+    resp = client.get("/events/", params={"organization_id": org.id, "include_past": "true"})
     assert resp.status_code == 200
     items = resp.json()
     assert len(items) == 2
@@ -516,6 +517,113 @@ def test_split_at_last_count_occurrence_becomes_standalone(client, db):
     assert result.series_id is None
     assert result.occurrence_index is None
     assert result.title == "Standalone Now"
+
+
+# ── 21. scope=future + unchanged recurrence preserves remaining count ─────────
+
+def test_update_future_count_split_preserves_remaining_count(client, db):
+    """Reproduce: daily×5, edit occ index=3 with scope=future sending original recurrence unchanged.
+    New series must have 2 occurrences (5-3), not 5."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db)
+
+    body = _event_body(org.id, [cat.id], recurrence=_recurrence("daily", 1, "count", total_count=5))
+    data = client.post("/events/", json=body, headers=_auth(user.id)).json()
+    series_id = data["series_id"]
+
+    occ3 = db.query(Event).filter(
+        Event.series_id == series_id, Event.occurrence_index == 3
+    ).first()
+
+    # Flutter sends back the original recurrence unchanged (the bug trigger)
+    resp = client.put(
+        f"/events/{occ3.id}",
+        json={"title": "Updated", "recurrence": _recurrence("daily", 1, "count", total_count=5)},
+        params={"scope": "future"},
+        headers=_auth(user.id),
+    )
+    assert resp.status_code == 200
+
+    db.expire_all()
+    # Original series: indices 0, 1, 2 → 3 events
+    assert _series_count(db, series_id) == 3
+
+    # New series: 5 - 3 = 2 remaining occurrences
+    new_series_id = resp.json()["series_id"]
+    assert new_series_id != series_id
+    assert _series_count(db, new_series_id) == 2
+
+    new_series = db.query(EventSeries).filter(EventSeries.id == new_series_id).first()
+    assert new_series.total_count == 2
+
+
+# ── 22. scope=future + explicit new count uses that count ─────────────────────
+
+def test_update_future_count_split_explicit_new_count(client, db):
+    """When the user explicitly changes total_count, that value is used as-is."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db)
+
+    body = _event_body(org.id, [cat.id], recurrence=_recurrence("weekly", 1, "count", total_count=4))
+    data = client.post("/events/", json=body, headers=_auth(user.id)).json()
+    series_id = data["series_id"]
+
+    occ2 = db.query(Event).filter(
+        Event.series_id == series_id, Event.occurrence_index == 2
+    ).first()
+
+    # User explicitly changes total_count from 4 → 3
+    resp = client.put(
+        f"/events/{occ2.id}",
+        json={"recurrence": _recurrence("weekly", 1, "count", total_count=3)},
+        params={"scope": "future"},
+        headers=_auth(user.id),
+    )
+    assert resp.status_code == 200
+
+    db.expire_all()
+    new_series_id = resp.json()["series_id"]
+    new_series = db.query(EventSeries).filter(EventSeries.id == new_series_id).first()
+    assert new_series.total_count == 3
+    assert _series_count(db, new_series_id) == 3
+
+
+# ── 23. Count split preserves remaining count across all frequencies ──────────
+
+@pytest.mark.parametrize("frequency", ["daily", "weekly", "monthly", "yearly"])
+def test_update_future_count_split_all_frequencies(client, db, frequency):
+    """Splitting at index 1 with unchanged recurrence gives 4-1=3 remaining for all frequencies."""
+    user = _make_user(db)
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db)
+
+    body = _event_body(org.id, [cat.id], recurrence=_recurrence(frequency, 1, "count", total_count=4))
+    data = client.post("/events/", json=body, headers=_auth(user.id)).json()
+    series_id = data["series_id"]
+
+    occ1 = db.query(Event).filter(
+        Event.series_id == series_id, Event.occurrence_index == 1
+    ).first()
+
+    resp = client.put(
+        f"/events/{occ1.id}",
+        json={"recurrence": _recurrence(frequency, 1, "count", total_count=4)},  # unchanged
+        params={"scope": "future"},
+        headers=_auth(user.id),
+    )
+    assert resp.status_code == 200
+
+    db.expire_all()
+    new_series_id = resp.json()["series_id"]
+    new_series = db.query(EventSeries).filter(EventSeries.id == new_series_id).first()
+    # 4 - 1 = 3 remaining
+    assert new_series.total_count == 3
+    assert _series_count(db, new_series_id) == 3
 
 
 # ── 20. Standalone events unaffected by series delete ────────────────────────
