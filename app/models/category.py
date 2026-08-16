@@ -8,4 +8,7 @@ class Category(Base):
     id = Column(Integer, primary_key=True)
 
     name = Column(String(255), nullable=False)
+    name_en = Column(String(255), nullable=True)
+    name_ru = Column(String(255), nullable=True)
+    name_he = Column(String(255), nullable=True)
     icon_url = Column(Text)

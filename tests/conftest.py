@@ -19,6 +19,7 @@ from app.api.organization_invites import router as org_invites_router, resolve_r
 from app.api.organization_members import router as org_members_router
 from app.api.events import router as events_router
 from app.api.cities import router as cities_router
+from app.api.categories import router as categories_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
 import app.models.category          # noqa: F401
@@ -55,6 +56,7 @@ app.include_router(org_invites_router)
 app.include_router(invite_resolve_router)
 app.include_router(org_members_router)
 app.include_router(events_router)
+app.include_router(categories_router)
 
 TEST_ENGINE = create_engine(
     "sqlite://",
