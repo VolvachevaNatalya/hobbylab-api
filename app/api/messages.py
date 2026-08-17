@@ -74,8 +74,8 @@ def create_message(
             user_id=notify_user_id,
             conversation_id=data.conversation_id,
             organization_id=conversation.organization_id,
-            title="New message",
-            message="You have a new message",
+            title="notification.new_message.title",
+            message="notification.new_message.body",
             type="message"
         )
         db.add(notification)
