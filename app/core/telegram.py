@@ -36,4 +36,6 @@ def send_support_request(
             timeout=5,
         )
     except Exception:
-        logger.exception("Telegram delivery failed for support request #%s", request_id)
+        # Do not use logger.exception here — the traceback from requests includes
+        # the full URL which contains the bot token in plain text.
+        logger.warning("Telegram delivery failed for support request #%s", request_id)
