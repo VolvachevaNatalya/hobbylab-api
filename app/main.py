@@ -24,6 +24,7 @@ from app.api.organization_invites import router as organization_invites_router, 
 from app.api.organization_members import router as organization_members_router
 from app.api.cities import router as cities_router
 from app.api.upload import router as upload_router
+from app.api.support import router as support_router
 from app.db.database import Base
 from app.models import *
 from app.models.organization_photo import OrganizationPhoto  # noqa: F401 – ensures table is created
@@ -158,6 +159,7 @@ app.include_router(invite_resolve_router)
 app.include_router(organization_members_router)
 app.include_router(cities_router)
 app.include_router(upload_router)
+app.include_router(support_router)
 
 
 @app.get("/")
