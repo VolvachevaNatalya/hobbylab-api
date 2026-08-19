@@ -21,6 +21,9 @@ from app.api.events import router as events_router
 from app.api.cities import router as cities_router
 from app.api.categories import router as categories_router
 from app.api.support import router as support_router
+from app.api.conversations import router as conversations_router
+from app.api.messages import router as messages_router
+from app.api.notifications import router as notifications_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
 import app.models.category          # noqa: F401
@@ -60,6 +63,9 @@ app.include_router(org_members_router)
 app.include_router(events_router)
 app.include_router(categories_router)
 app.include_router(support_router)
+app.include_router(conversations_router)
+app.include_router(messages_router)
+app.include_router(notifications_router)
 
 TEST_ENGINE = create_engine(
     "sqlite://",

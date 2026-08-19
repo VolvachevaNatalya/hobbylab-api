@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import exists, or_
@@ -6,6 +8,7 @@ from typing import List
 from app.db.dependencies import get_db
 from app.models.conversation import Conversation
 from app.models.message import Message
+from app.models.notification import Notification
 from app.schemas.conversation import ConversationCreate, ConversationResponse
 from app.models.user import User
 from app.models.organization_user import OrganizationUser
@@ -66,3 +69,45 @@ def get_user_conversations(
         )
         .all()
     )
+
+
+@router.post("/{conversation_id}/read")
+def mark_conversation_read(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id
+    ).first()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    is_user_side = conversation.user_id == current_user.id
+    is_org_side = db.query(OrganizationUser).filter(
+        OrganizationUser.organization_id == conversation.organization_id,
+        OrganizationUser.user_id == current_user.id,
+    ).first() is not None
+
+    if not is_user_side and not is_org_side:
+        raise HTTPException(status_code=403, detail="No permission")
+
+    now = datetime.now(timezone.utc)
+
+    # Mark unread messages not sent by this user as read.
+    db.query(Message).filter(
+        Message.conversation_id == conversation_id,
+        Message.sender_id != current_user.id,
+        Message.read_at.is_(None),
+    ).update({"read_at": now}, synchronize_session="evaluate")
+
+    # Mark unread message-type notifications for this conversation as read.
+    db.query(Notification).filter(
+        Notification.user_id == current_user.id,
+        Notification.type == "message",
+        Notification.conversation_id == conversation_id,
+        Notification.is_read == False,
+    ).update({"is_read": True}, synchronize_session="evaluate")
+
+    db.commit()
+    return {"status": "ok"}

@@ -1,22 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from typing import List
 
-from app.db.database import SessionLocal
 from app.core.auth import get_current_user
+from app.db.dependencies import get_db
 from app.models.notification import Notification
 from app.models.user import User
 from app.schemas.notification import NotificationResponse
-from typing import List
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 @router.get("/", response_model=List[NotificationResponse])
@@ -72,9 +64,22 @@ def get_unread_notifications_count(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    count = db.query(Notification).filter(
-        Notification.user_id == current_user.id,
-        Notification.is_read == False
-    ).count()
-
-    return {"count": count}
+    message_count = (
+        db.query(Notification)
+        .filter(
+            Notification.user_id == current_user.id,
+            Notification.is_read == False,
+            Notification.type == "message",
+        )
+        .count()
+    )
+    alert_count = (
+        db.query(Notification)
+        .filter(
+            Notification.user_id == current_user.id,
+            Notification.is_read == False,
+            Notification.type != "message",
+        )
+        .count()
+    )
+    return {"message_count": message_count, "alert_count": alert_count}
