@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import logging
-import os
 from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-
-logger = logging.getLogger(__name__)
 from sqlalchemy import case, exists, func
 from sqlalchemy.orm import Session
 
@@ -247,22 +243,6 @@ def create_organization(
         role="owner",
     )
     db.add(org_user)
-
-    _admin_user_id = os.getenv("ADMIN_USER_ID")
-    if _admin_user_id:
-        admin_notification = Notification(
-            user_id=int(_admin_user_id),
-            organization_id=organization.id,
-            title="New organization pending approval",
-            message=f"New organization pending approval: {organization.name}",
-            type="new_organization",
-        )
-        db.add(admin_notification)
-    else:
-        logger.warning(
-            "ADMIN_USER_ID not set; admin notification skipped for org %s",
-            organization.id,
-        )
 
     for pos, cat_id in enumerate(category_ids):
         db.add(OrganizationCategory(

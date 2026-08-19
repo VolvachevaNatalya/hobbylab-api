@@ -4,11 +4,7 @@ Tests for:
   - GET /notifications/unread-count  (split response)
   - admin user_id=1 no longer hardcoded in org creation
 """
-import os
-from unittest.mock import patch
-
 from app.core.security import create_access_token
-from app.models.category import Category
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.notification import Notification
@@ -25,14 +21,6 @@ def _make_user(db, email="u@test.com", name="User"):
     db.commit()
     db.refresh(u)
     return u
-
-
-def _make_category(db, name="Sport"):
-    cat = Category(name=name)
-    db.add(cat)
-    db.commit()
-    db.refresh(cat)
-    return cat
 
 
 def _make_org(db, owner: User):
@@ -259,55 +247,3 @@ def test_unread_count_after_mark_conversation_read(client, db):
     assert after["message_count"] == 0
 
 
-# ── admin user_id=1 not hardcoded ─────────────────────────────────────────────
-
-def test_org_creation_without_admin_env_creates_no_admin_notification(client, db):
-    """When ADMIN_USER_ID is not set, no notification is created for user_id=1."""
-    user = _make_user(db, email="founder@test.com")
-    cat = _make_category(db)
-    # Ensure ADMIN_USER_ID is absent for this call
-    env_without_admin = {k: v for k, v in os.environ.items() if k != "ADMIN_USER_ID"}
-
-    with patch.dict(os.environ, env_without_admin, clear=True):
-        with patch("app.api.organizations.geocode", return_value=(32.0, 34.0)):
-            resp = client.post(
-                "/organizations/",
-                json={"name": "NoAdmin Org", "category_ids": [cat.id]},
-                headers=_auth(user),
-            )
-
-    assert resp.status_code == 200
-    notif = db.query(Notification).filter(
-        Notification.user_id == 1,
-        Notification.type == "new_organization",
-    ).first()
-    assert notif is None
-
-
-def test_org_creation_with_admin_env_notifies_correct_user(client, db):
-    """When ADMIN_USER_ID is set, the notification goes to that user, not user_id=1."""
-    admin = _make_user(db, email="admin@test.com")
-    founder = _make_user(db, email="founder2@test.com")
-    cat = _make_category(db, name="Music")
-
-    with patch.dict(os.environ, {"ADMIN_USER_ID": str(admin.id)}):
-        with patch("app.api.organizations.geocode", return_value=(32.0, 34.0)):
-            resp = client.post(
-                "/organizations/",
-                json={"name": "Admin Org", "category_ids": [cat.id]},
-                headers=_auth(founder),
-            )
-
-    assert resp.status_code == 200
-    notif = db.query(Notification).filter(
-        Notification.user_id == admin.id,
-        Notification.type == "new_organization",
-    ).first()
-    assert notif is not None
-    # Confirm it did NOT go to user_id=1 (unless admin happens to be id=1)
-    if admin.id != 1:
-        wrong = db.query(Notification).filter(
-            Notification.user_id == 1,
-            Notification.type == "new_organization",
-        ).first()
-        assert wrong is None
