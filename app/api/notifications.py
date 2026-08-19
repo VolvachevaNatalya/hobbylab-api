@@ -79,6 +79,7 @@ def get_unread_notifications_count(
             Notification.user_id == current_user.id,
             Notification.is_read == False,
             Notification.type != "message",
+            Notification.type != "new_organization",
         )
         .count()
     )

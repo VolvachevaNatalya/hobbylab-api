@@ -174,45 +174,71 @@ def test_mark_conversation_read_org_side(client, db):
 
 # ── unread-count split ────────────────────────────────────────────────────────
 
-def test_unread_count_splits_message_and_alert(client, db):
-    user = _make_user(db, email="count_user@test.com")
-
+def test_unread_message_counts_in_message_count_only(client, db):
+    user = _make_user(db, email="count_msg@test.com")
     _make_notification(db, user.id, "message")
     _make_notification(db, user.id, "message")
-    _make_notification(db, user.id, "new_organization")
-    _make_notification(db, user.id, "new_organization")
-    _make_notification(db, user.id, "new_organization")
 
-    resp = client.get("/notifications/unread-count", headers=_auth(user))
-    assert resp.status_code == 200
-    data = resp.json()
+    data = client.get("/notifications/unread-count", headers=_auth(user)).json()
     assert data["message_count"] == 2
+    assert data["alert_count"] == 0
+
+
+def test_unread_normal_alert_counts_in_alert_count_only(client, db):
+    user = _make_user(db, email="count_alert@test.com")
+    _make_notification(db, user.id, "promo")
+    _make_notification(db, user.id, "promo")
+    _make_notification(db, user.id, "promo")
+
+    data = client.get("/notifications/unread-count", headers=_auth(user)).json()
+    assert data["message_count"] == 0
     assert data["alert_count"] == 3
 
 
-def test_unread_count_excludes_read_notifications(client, db):
-    user = _make_user(db, email="count_read@test.com")
+def test_unread_new_organization_counted_in_neither(client, db):
+    user = _make_user(db, email="count_neworg@test.com")
+    _make_notification(db, user.id, "new_organization")
+    _make_notification(db, user.id, "new_organization")
 
+    data = client.get("/notifications/unread-count", headers=_auth(user)).json()
+    assert data["message_count"] == 0
+    assert data["alert_count"] == 0
+
+
+def test_read_notifications_counted_in_neither(client, db):
+    user = _make_user(db, email="count_read2@test.com")
     _make_notification(db, user.id, "message", is_read=True)
-    _make_notification(db, user.id, "message")
+    _make_notification(db, user.id, "promo", is_read=True)
     _make_notification(db, user.id, "new_organization", is_read=True)
 
-    resp = client.get("/notifications/unread-count", headers=_auth(user))
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["message_count"] == 1
-    assert data["alert_count"] == 0
+    data = client.get("/notifications/unread-count", headers=_auth(user)).json()
+    assert data == {"message_count": 0, "alert_count": 0}
+
+
+def test_unread_count_mixed_types(client, db):
+    """All three types together; new_organization must not appear in either count."""
+    user = _make_user(db, email="count_mixed@test.com")
+    _make_notification(db, user.id, "message")
+    _make_notification(db, user.id, "message")
+    _make_notification(db, user.id, "promo")
+    _make_notification(db, user.id, "new_organization")
+    _make_notification(db, user.id, "new_organization")
+
+    data = client.get("/notifications/unread-count", headers=_auth(user)).json()
+    assert data["message_count"] == 2
+    assert data["alert_count"] == 1
 
 
 def test_unread_count_zero_when_all_read(client, db):
     user = _make_user(db, email="all_read@test.com")
-
     _make_notification(db, user.id, "message", is_read=True)
+    _make_notification(db, user.id, "promo", is_read=True)
     _make_notification(db, user.id, "new_organization", is_read=True)
 
-    resp = client.get("/notifications/unread-count", headers=_auth(user))
-    assert resp.status_code == 200
-    assert resp.json() == {"message_count": 0, "alert_count": 0}
+    assert client.get("/notifications/unread-count", headers=_auth(user)).json() == {
+        "message_count": 0,
+        "alert_count": 0,
+    }
 
 
 def test_unread_count_is_per_user(client, db):
