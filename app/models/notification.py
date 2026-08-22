@@ -17,5 +17,6 @@ class Notification(Base):
     type = Column(String(50), nullable=False)
 
     is_read = Column(Boolean, default=False)
+    payload = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

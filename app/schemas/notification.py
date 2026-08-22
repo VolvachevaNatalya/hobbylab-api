@@ -16,6 +16,7 @@ class NotificationResponse(BaseModel):
     conversation_id: Optional[int]
     title: str
     message: Optional[str]
+    payload: Optional[str] = None
     type: str
     is_read: bool
     created_at: datetime

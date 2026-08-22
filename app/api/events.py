@@ -19,6 +19,12 @@ from app.models.user import User
 from app.schemas.category import CategoryResponse
 from app.schemas.event import EventCreate, EventResponse, EventUpdate
 from app.schemas.event_series import RecurrenceCreate, RecurrenceResponse
+from app.core.event_notifications import (
+    has_meaningful_change,
+    notify_event_cancelled,
+    notify_event_updated,
+    notify_new_event,
+)
 from app.services.geocoding import geocode
 from app.services.recurrence import adjust_original_series_after_split, generate_dates
 
@@ -939,33 +945,39 @@ def create_event(
             db.add(EventCategory(event_id=new_event.id, category_id=cat_id, position=pos))
         db.commit()
         db.refresh(new_event)
-        return _enrich(new_event, db)
+    else:
+        # Recurring series
+        series = EventSeries(
+            frequency=recurrence.frequency,
+            interval=recurrence.interval,
+            end_type=recurrence.end_type,
+            total_count=recurrence.total_count,
+            end_date=recurrence.end_date,
+        )
+        db.add(series)
+        db.flush()
 
-    # Recurring series
-    series = EventSeries(
-        frequency=recurrence.frequency,
-        interval=recurrence.interval,
-        end_type=recurrence.end_type,
-        total_count=recurrence.total_count,
-        end_date=recurrence.end_date,
-    )
-    db.add(series)
-    db.flush()
+        first_start = event_data.pop("start_datetime")
+        end_datetime = event_data.pop("end_datetime", None)
+        duration = (end_datetime - first_start) if end_datetime and first_start else None
 
-    first_start = event_data.pop("start_datetime")
-    end_datetime = event_data.pop("end_datetime", None)
-    duration = (end_datetime - first_start) if end_datetime and first_start else None
+        shared = {k: v for k, v in event_data.items()
+                   if k not in ("category_id", "series_id", "occurrence_index", "original_start_datetime")}
 
-    shared = {k: v for k, v in event_data.items()
-               if k not in ("category_id", "series_id", "occurrence_index", "original_start_datetime")}
+        dates = generate_dates(recurrence, first_start)
+        new_events = _create_occurrences(db, dates, shared, category_ids, series.id, duration)
 
-    dates = generate_dates(recurrence, first_start)
-    new_events = _create_occurrences(db, dates, shared, category_ids, series.id, duration)
+        series.generated_until = dates[-1]
+        db.commit()
+        new_event = new_events[0]
+        db.refresh(new_event)
 
-    series.generated_until = dates[-1]
-    db.commit()
-    db.refresh(new_events[0])
-    return _enrich(new_events[0], db)
+    org = db.query(Organization).filter(Organization.id == new_event.organization_id).first()
+    if org:
+        notify_new_event(new_event.id, new_event.title, org.id, org.name, current_user.id, db)
+        db.commit()
+
+    return _enrich(new_event, db)
 
 
 @router.get("/{event_id}", response_model=EventResponse)
@@ -1006,22 +1018,37 @@ def update_event(
     category_ids: Optional[List[int]] = update_data.pop("category_ids", None)
     update_data.pop("recurrence", None)
 
+    original_id = event.id
+    original_title = event.title
+    original_status = event.status
+
+    is_cancellation = update_data.get("status") == "cancelled" and original_status != "cancelled"
+    needs_update_notify = not is_cancellation and has_meaningful_change(event, update_data)
+
     # Removing recurrence: keep only this occurrence, delete all siblings, delete series.
     # Scope is irrelevant for this operation.
     if remove_recurrence and event.series_id is not None:
         original_series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
-        return _remove_series_keep_one(event, original_series, update_data, category_ids, db)
-
+        result = _remove_series_keep_one(event, original_series, update_data, category_ids, db)
     # Adding recurrence to a standalone event: convert it to a series in-place.
     # Scope is irrelevant — the existing event always becomes occurrence 0.
-    if recurrence is not None and event.series_id is None:
-        return _convert_standalone_to_series(event, update_data, category_ids, recurrence, db)
+    elif recurrence is not None and event.series_id is None:
+        result = _convert_standalone_to_series(event, update_data, category_ids, recurrence, db)
+    elif scope == "single":
+        result = _update_single(event, update_data, category_ids, recurrence, remove_recurrence, db)
+    elif scope == "future":
+        result = _update_future(event, update_data, category_ids, recurrence, remove_recurrence, db)
+    else:
+        result = _update_series(event, update_data, category_ids, recurrence, remove_recurrence, db)
 
-    if scope == "single":
-        return _update_single(event, update_data, category_ids, recurrence, remove_recurrence, db)
-    if scope == "future":
-        return _update_future(event, update_data, category_ids, recurrence, remove_recurrence, db)
-    return _update_series(event, update_data, category_ids, recurrence, remove_recurrence, db)
+    if is_cancellation:
+        notify_event_cancelled(original_id, original_title, current_user.id, db)
+        db.commit()
+    elif needs_update_notify:
+        notify_event_updated(original_id, original_title, current_user.id, db)
+        db.commit()
+
+    return result
 
 
 @router.delete("/{event_id}")
