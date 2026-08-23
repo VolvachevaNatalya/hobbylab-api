@@ -9,6 +9,7 @@ from app.db.dependencies import get_db
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.notification import Notification
+from app.models.organization import Organization
 from app.schemas.conversation import ConversationCreate, ConversationResponse
 from app.models.user import User
 from app.models.organization_user import OrganizationUser
@@ -33,19 +34,23 @@ def create_conversation(
         Conversation.organization_id == data.organization_id
     ).first()
 
-    if existing:
-        return existing
+    if not existing:
+        conversation = Conversation(
+            user_id=current_user.id,
+            organization_id=data.organization_id
+        )
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+    else:
+        conversation = existing
 
-    conversation = Conversation(
-        user_id=current_user.id,
-        organization_id=data.organization_id
+    org_name = db.query(Organization.name).filter(
+        Organization.id == conversation.organization_id
+    ).scalar()
+    return ConversationResponse.model_validate(conversation).model_copy(
+        update={"organization_name": org_name}
     )
-
-    db.add(conversation)
-    db.commit()
-    db.refresh(conversation)
-
-    return conversation
 
 
 @router.get("/", response_model=List[ConversationResponse])
@@ -58,7 +63,7 @@ def get_user_conversations(
         OrganizationUser.user_id == current_user.id
     ).subquery()
 
-    return (
+    conversations = (
         db.query(Conversation)
         .filter(
             or_(
@@ -69,6 +74,21 @@ def get_user_conversations(
         )
         .all()
     )
+    if not conversations:
+        return []
+    org_ids = list({c.organization_id for c in conversations})
+    org_name_map = {
+        r.id: r.name
+        for r in db.query(Organization.id, Organization.name)
+        .filter(Organization.id.in_(org_ids))
+        .all()
+    }
+    return [
+        ConversationResponse.model_validate(c).model_copy(
+            update={"organization_name": org_name_map.get(c.organization_id)}
+        )
+        for c in conversations
+    ]
 
 
 @router.post("/{conversation_id}/read")

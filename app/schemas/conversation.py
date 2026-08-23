@@ -10,6 +10,7 @@ class ConversationResponse(BaseModel):
     id: int
     user_id: int
     organization_id: int
+    organization_name: Optional[str] = None
     created_at: datetime
     last_message_at: Optional[datetime]
     class Config:

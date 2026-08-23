@@ -11,6 +11,7 @@ from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
 from app.models.user import User
+from app.schemas.conversation import ConversationResponse
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -272,4 +273,70 @@ def test_unread_count_after_mark_conversation_read(client, db):
     after = client.get("/notifications/unread-count", headers=_auth(user)).json()
     assert after["message_count"] == 0
 
+
+# ── conversations list: organization_name ─────────────────────────────────────
+
+def test_conversations_list_includes_org_name(client, db):
+    """GET /conversations/ includes organization_name for each conversation."""
+    user = _make_user(db, "cvlist@test.com")
+    owner = _make_user(db, "cvlist_owner@test.com")
+    org = _make_org(db, owner)
+    conv = _make_conversation(db, user, org)
+    _make_message(db, conv.id, sender_id=owner.id)
+
+    resp = client.get("/conversations/", headers=_auth(user))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["organization_name"] == "Test Org"
+
+
+def test_create_conversation_includes_org_name(client, db):
+    """POST /conversations/ returns organization_name in the response."""
+    user = _make_user(db, "cvcreate@test.com")
+    owner = _make_user(db, "cvcreate_owner@test.com")
+    org = _make_org(db, owner)
+
+    resp = client.post("/conversations/", json={"organization_id": org.id}, headers=_auth(user))
+    assert resp.status_code == 200
+    assert resp.json()["organization_name"] == "Test Org"
+
+
+def test_create_existing_conversation_includes_org_name(client, db):
+    """POST /conversations/ on an already-existing conversation still returns organization_name."""
+    user = _make_user(db, "cvexist@test.com")
+    owner = _make_user(db, "cvexist_owner@test.com")
+    org = _make_org(db, owner)
+    _make_conversation(db, user, org)
+
+    resp = client.post("/conversations/", json={"organization_id": org.id}, headers=_auth(user))
+    assert resp.status_code == 200
+    assert resp.json()["organization_name"] == "Test Org"
+
+
+def test_conversations_list_multiple_orgs_correct_names(client, db):
+    """GET /conversations/ with multiple conversations returns each org's correct name."""
+    user = _make_user(db, "cvmulti@test.com")
+    owner1 = _make_user(db, "cvmulti_o1@test.com")
+    owner2 = _make_user(db, "cvmulti_o2@test.com")
+    org1 = _make_org(db, owner1)  # name = "Test Org"
+
+    org2 = Organization(name="Dance Studio", status="active", verified=True)
+    db.add(org2)
+    db.flush()
+    db.add(OrganizationUser(organization_id=org2.id, user_id=owner2.id, role="owner"))
+    db.commit()
+    db.refresh(org2)
+
+    conv1 = _make_conversation(db, user, org1)
+    conv2 = _make_conversation(db, user, org2)
+    _make_message(db, conv1.id, sender_id=owner1.id)
+    _make_message(db, conv2.id, sender_id=owner2.id)
+
+    resp = client.get("/conversations/", headers=_auth(user))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 2
+    names = {d["organization_name"] for d in data}
+    assert names == {"Test Org", "Dance Studio"}
 
