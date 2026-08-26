@@ -340,3 +340,255 @@ def test_conversations_list_multiple_orgs_correct_names(client, db):
     names = {d["organization_name"] for d in data}
     assert names == {"Test Org", "Dance Studio"}
 
+
+# ── user_name in conversation response ───────────────────────────────────────
+
+def test_conversations_list_includes_user_name(client, db):
+    """GET /conversations/ includes user_name so org-side can display the customer."""
+    user = _make_user(db, "masha@test.com", name="Masha")
+    owner = _make_user(db, "katya@test.com", name="Katya")
+    org = _make_org(db, owner)
+    conv = _make_conversation(db, user, org)
+    _make_message(db, conv.id, sender_id=user.id)
+
+    # Org side: Katya sees Masha's name
+    resp = client.get("/conversations/", headers=_auth(owner))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 1
+    assert data[0]["user_name"] == "Masha"
+
+
+def test_create_conversation_includes_user_name(client, db):
+    """POST /conversations/ returns user_name equal to the caller's own name."""
+    user = _make_user(db, "masha2@test.com", name="Masha")
+    owner = _make_user(db, "katya2@test.com", name="Katya")
+    org = _make_org(db, owner)
+
+    resp = client.post("/conversations/", json={"organization_id": org.id}, headers=_auth(user))
+    assert resp.status_code == 200
+    assert resp.json()["user_name"] == "Masha"
+
+
+# ── message sender_type / sender_id ──────────────────────────────────────────
+
+def test_user_message_has_user_sender(client, db):
+    """User-side message: sender_type='user', sender_id=conversation.user_id."""
+    user = _make_user(db, "sender_user@test.com")
+    owner = _make_user(db, "sender_owner@test.com")
+    org = _make_org(db, owner)
+    conv = _make_conversation(db, user, org)
+
+    resp = client.post(
+        "/messages/",
+        json={"conversation_id": conv.id, "message_text": "hello"},
+        headers=_auth(user),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sender_type"] == "user"
+    assert data["sender_id"] == conv.id  # conv.user_id == user.id
+
+    db.expire_all()
+    msg = db.query(Message).filter(Message.id == data["id"]).first()
+    assert msg.sender_type == "user"
+    assert msg.sender_id == user.id
+
+
+def test_org_reply_has_organization_sender(client, db):
+    """Org-side reply: sender_type='organization', sender_id=conversation.organization_id."""
+    user = _make_user(db, "orgmsg_user@test.com")
+    owner = _make_user(db, "orgmsg_owner@test.com")
+    org = _make_org(db, owner)
+    conv = _make_conversation(db, user, org)
+
+    resp = client.post(
+        "/messages/",
+        json={"conversation_id": conv.id, "message_text": "hi back"},
+        headers=_auth(owner),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sender_type"] == "organization"
+    assert data["sender_id"] == org.id
+
+    db.expire_all()
+    msg = db.query(Message).filter(Message.id == data["id"]).first()
+    assert msg.sender_type == "organization"
+    assert msg.sender_id == org.id
+
+
+def test_org_admin_reply_uses_org_sender_not_personal(client, db):
+    """An admin (not owner) of the org also sends as the org, not as themselves personally."""
+    user = _make_user(db, "adm_user@test.com")
+    owner = _make_user(db, "adm_owner@test.com")
+    admin = _make_user(db, "adm_admin@test.com")
+    org = _make_org(db, owner)
+    db.add(OrganizationUser(organization_id=org.id, user_id=admin.id, role="admin"))
+    db.commit()
+    conv = _make_conversation(db, user, org)
+
+    resp = client.post(
+        "/messages/",
+        json={"conversation_id": conv.id, "message_text": "from admin"},
+        headers=_auth(admin),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sender_type"] == "organization"
+    assert data["sender_id"] == org.id
+
+
+def test_unrelated_org_member_cannot_send(client, db):
+    """A user who is an org member of a DIFFERENT org cannot send on this conversation."""
+    user = _make_user(db, "unrel_user@test.com")
+    owner = _make_user(db, "unrel_owner@test.com")
+    intruder = _make_user(db, "unrel_intruder@test.com")
+    org = _make_org(db, owner)
+    other_org = Organization(name="Other Org", status="active", verified=True)
+    db.add(other_org)
+    db.flush()
+    db.add(OrganizationUser(organization_id=other_org.id, user_id=intruder.id, role="owner"))
+    db.commit()
+    conv = _make_conversation(db, user, org)
+
+    resp = client.post(
+        "/messages/",
+        json={"conversation_id": conv.id, "message_text": "sneak"},
+        headers=_auth(intruder),
+    )
+    assert resp.status_code == 403
+
+
+# ── notification fan-out ──────────────────────────────────────────────────────
+
+def test_user_message_notifies_all_org_members(client, db):
+    """When the user sends, ALL owner/admin org members receive a notification."""
+    user = _make_user(db, "fan_user@test.com")
+    owner = _make_user(db, "fan_owner@test.com")
+    admin = _make_user(db, "fan_admin@test.com")
+    member = _make_user(db, "fan_member@test.com")
+    org = _make_org(db, owner)
+    db.add(OrganizationUser(organization_id=org.id, user_id=admin.id, role="admin"))
+    # 'member' role — should NOT be notified (only owner/admin)
+    db.add(OrganizationUser(organization_id=org.id, user_id=member.id, role="member"))
+    db.commit()
+    conv = _make_conversation(db, user, org)
+
+    resp = client.post(
+        "/messages/",
+        json={"conversation_id": conv.id, "message_text": "hello org"},
+        headers=_auth(user),
+    )
+    assert resp.status_code == 200
+
+    db.expire_all()
+    owner_notifs = db.query(Notification).filter(
+        Notification.user_id == owner.id, Notification.type == "message"
+    ).count()
+    admin_notifs = db.query(Notification).filter(
+        Notification.user_id == admin.id, Notification.type == "message"
+    ).count()
+    member_notifs = db.query(Notification).filter(
+        Notification.user_id == member.id, Notification.type == "message"
+    ).count()
+    assert owner_notifs == 1
+    assert admin_notifs == 1
+    assert member_notifs == 0
+
+
+def test_org_reply_notifies_only_conversation_user(client, db):
+    """Org-side reply notifies only conversation.user_id, not the replier."""
+    user = _make_user(db, "reply_user@test.com")
+    owner = _make_user(db, "reply_owner@test.com")
+    org = _make_org(db, owner)
+    conv = _make_conversation(db, user, org)
+
+    resp = client.post(
+        "/messages/",
+        json={"conversation_id": conv.id, "message_text": "reply"},
+        headers=_auth(owner),
+    )
+    assert resp.status_code == 200
+
+    db.expire_all()
+    user_notifs = db.query(Notification).filter(
+        Notification.user_id == user.id, Notification.type == "message"
+    ).count()
+    owner_notifs = db.query(Notification).filter(
+        Notification.user_id == owner.id, Notification.type == "message"
+    ).count()
+    assert user_notifs == 1
+    assert owner_notifs == 0
+
+
+# ── shared org inbox read behavior ───────────────────────────────────────────
+
+def test_org_member_read_clears_all_org_member_notifications(client, db):
+    """When one org member reads, ALL org members' notifications for that conversation clear."""
+    user = _make_user(db, "shared_user@test.com")
+    owner = _make_user(db, "shared_owner@test.com")
+    admin = _make_user(db, "shared_admin@test.com")
+    org = _make_org(db, owner)
+    db.add(OrganizationUser(organization_id=org.id, user_id=admin.id, role="admin"))
+    db.commit()
+    conv = _make_conversation(db, user, org)
+
+    n_owner = _make_notification(db, owner.id, "message", conversation_id=conv.id)
+    n_admin = _make_notification(db, admin.id, "message", conversation_id=conv.id)
+
+    # Owner reads — admin's notification should also clear.
+    resp = client.post(f"/conversations/{conv.id}/read", headers=_auth(owner))
+    assert resp.status_code == 200
+
+    db.expire_all()
+    assert db.query(Notification).get(n_owner.id).is_read is True
+    assert db.query(Notification).get(n_admin.id).is_read is True
+
+
+def test_user_read_does_not_clear_org_notifications(client, db):
+    """When the user (customer) reads, org member notifications are untouched."""
+    user = _make_user(db, "usr_read@test.com")
+    owner = _make_user(db, "usr_read_owner@test.com")
+    org = _make_org(db, owner)
+    conv = _make_conversation(db, user, org)
+
+    n_user = _make_notification(db, user.id, "message", conversation_id=conv.id)
+    n_owner = _make_notification(db, owner.id, "message", conversation_id=conv.id)
+
+    resp = client.post(f"/conversations/{conv.id}/read", headers=_auth(user))
+    assert resp.status_code == 200
+
+    db.expire_all()
+    assert db.query(Notification).get(n_user.id).is_read is True
+    assert db.query(Notification).get(n_owner.id).is_read is False
+
+
+def test_org_read_marks_user_messages_read_not_own(client, db):
+    """Org-side read stamps read_at on user messages; org's own messages stay unread."""
+    user = _make_user(db, "orgread_user@test.com")
+    owner = _make_user(db, "orgread_owner@test.com")
+    org = _make_org(db, owner)
+    conv = _make_conversation(db, user, org)
+
+    # Simulate user message (sender_id=user.id) and org message (sender_id=org.id)
+    user_msg = Message(
+        conversation_id=conv.id, sender_type="user",
+        sender_id=user.id, message_text="from user",
+    )
+    org_msg = Message(
+        conversation_id=conv.id, sender_type="organization",
+        sender_id=org.id, message_text="from org",
+    )
+    db.add_all([user_msg, org_msg])
+    db.commit()
+    db.refresh(user_msg)
+    db.refresh(org_msg)
+
+    resp = client.post(f"/conversations/{conv.id}/read", headers=_auth(owner))
+    assert resp.status_code == 200
+
+    db.expire_all()
+    assert db.query(Message).get(user_msg.id).read_at is not None
+    assert db.query(Message).get(org_msg.id).read_at is None
+
