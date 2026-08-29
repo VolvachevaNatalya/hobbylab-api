@@ -1,5 +1,7 @@
-from datetime import datetime
+from datetime import datetime, date as date_type, time as time_type
 from typing import List, Optional
+
+from dateutil.tz import gettz as _gettz
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import and_, case, exists, func, or_
@@ -29,6 +31,39 @@ from app.services.geocoding import geocode
 from app.services.recurrence import adjust_original_series_after_split, generate_dates
 
 router = APIRouter(prefix="/events", tags=["events"])
+
+# ── Timezone helpers ───────────────────────────────────────────────────────────
+# Events are stored as naive datetimes in Israeli local time (the Flutter app
+# sends DateTime(...).toIso8601String() without UTC conversion).  To decide
+# whether an event is "past" we therefore compare calendar dates in the
+# Israel/Jerusalem timezone, not in UTC.
+
+_ISRAEL_TZ = _gettz('Asia/Jerusalem')
+
+
+def _israel_today() -> date_type:
+    """Return today's calendar date in Israel local time."""
+    return datetime.now(_ISRAEL_TZ).date()
+
+
+def _today_start_local() -> datetime:
+    """Return 00:00:00 of today's Israeli calendar date as a naive datetime.
+
+    Used in DB queries: events whose start_datetime is >= this value started
+    on today's calendar day or later and are therefore not yet past.
+    """
+    return datetime.combine(_israel_today(), time_type.min)
+
+
+def _local_now() -> datetime:
+    """Return the current Israel local time as a naive datetime.
+
+    Matches the naive-datetime storage format of Event.start_datetime / end_datetime.
+    Used when end_datetime is present: an event is past once this value exceeds
+    end_datetime, regardless of the calendar day.
+    """
+    return datetime.now(_ISRAEL_TZ).replace(tzinfo=None)
+
 
 # ── Shared field names that can be bulk-applied across occurrences ─────────────
 _SHARED_EVENT_FIELDS = frozenset({
@@ -129,6 +164,15 @@ def _enrich(event: Event, db: Session, city_map: Optional[dict] = None, series_m
             series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
         if series:
             resp = resp.model_copy(update={"recurrence": RecurrenceResponse.model_validate(series)})
+
+    # Rule:
+    #   end_datetime present → past once local-now is strictly after end_datetime
+    #   end_datetime absent  → past once the start calendar day has fully elapsed
+    if event.end_datetime is not None:
+        is_past = _local_now() > event.end_datetime
+    else:
+        is_past = event.start_datetime.date() < _israel_today()
+    resp = resp.model_copy(update={"is_past": is_past})
 
     return resp
 
@@ -873,7 +917,16 @@ def get_events(
                 Event.is_nationwide.is_(True),
             ))
         if not include_past:
-            query = query.filter(Event.start_datetime >= now)
+            # Non-past rule (applied identically in both geo and non-geo branches):
+            #   end_datetime present → keep while local-now <= end_datetime
+            #   end_datetime absent  → keep for the entire calendar day of start_datetime
+            _now = _local_now()
+            query = query.filter(
+                or_(
+                    and_(Event.end_datetime.isnot(None), Event.end_datetime >= _now),
+                    and_(Event.end_datetime.is_(None), Event.start_datetime >= _today_start_local()),
+                )
+            )
 
         rows = query.all()
         cities = _city_map([ev.city_id for ev, _, _ in rows], db)
@@ -887,7 +940,6 @@ def get_events(
             out.append(resp)
         return out
 
-    now = datetime.utcnow()
     query = db.query(Event)
     if organization_id is not None:
         query = query.filter(Event.organization_id == organization_id)
@@ -901,7 +953,13 @@ def get_events(
             Event.is_nationwide.is_(True),
         ))
     if not include_past:
-        query = query.filter(Event.start_datetime >= now)
+        _now = _local_now()
+        query = query.filter(
+            or_(
+                and_(Event.end_datetime.isnot(None), Event.end_datetime >= _now),
+                and_(Event.end_datetime.is_(None), Event.start_datetime >= _today_start_local()),
+            )
+        )
     events = query.order_by(Event.start_datetime.asc()).all()
     cities = _city_map([ev.city_id for ev in events], db)
     smap = _series_map([ev.series_id for ev in events], db)

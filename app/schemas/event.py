@@ -105,6 +105,10 @@ class EventResponse(BaseModel):
     category_name: Optional[str] = None
     categories: List[CategoryResponse] = []
 
+    # Computed: True when the event's LOCAL calendar date is before today's LOCAL calendar date.
+    # An event remains non-past for its entire calendar day regardless of its start time.
+    is_past: bool = False
+
     class Config:
         from_attributes = True
 

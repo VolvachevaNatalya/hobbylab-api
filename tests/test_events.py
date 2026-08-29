@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, date, timedelta
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -941,3 +942,475 @@ def test_convert_standalone_scope_is_ignored(client, db):
     db.expire_all()
     count = db.query(EventModel).filter(EventModel.series_id == data["series_id"]).count()
     assert count == 2
+
+
+# ── is_past field and calendar-date filtering ─────────────────────────────────
+#
+# We pin "today" to 2026-08-28 via patch so the tests are deterministic.
+# All start_datetime values are naive (Israeli local time, matching production).
+
+FIXED_TODAY = date(2026, 8, 28)
+
+
+@pytest.fixture
+def mock_today():
+    with patch("app.api.events._israel_today", return_value=FIXED_TODAY):
+        yield FIXED_TODAY
+
+
+def test_is_past_yesterday(client, db, mock_today):
+    """A. Event on yesterday → is_past = True."""
+    user = _make_user(db, "past_a@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastA")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Yesterday Event",
+        start_datetime=datetime(2026, 8, 27, 10, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is True
+
+
+def test_is_past_today_start_time_already_passed(client, db, mock_today):
+    """B/C. Event today at 08:00 (start time passed at 'current' 18:00) → is_past = False.
+    Calendar date is today so the event is still current for the whole day."""
+    user = _make_user(db, "past_b@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastB")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Today Early Event",
+        start_datetime=datetime(2026, 8, 28, 8, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is False
+
+
+def test_is_past_today_start_time_later(client, db, mock_today):
+    """C. Event today at 22:00 (start time not yet reached) → is_past = False."""
+    user = _make_user(db, "past_c@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastC")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Today Late Event",
+        start_datetime=datetime(2026, 8, 28, 22, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is False
+
+
+def test_is_past_tomorrow(client, db, mock_today):
+    """D. Event tomorrow → is_past = False."""
+    user = _make_user(db, "past_d@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastD")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Tomorrow Event",
+        start_datetime=datetime(2026, 8, 29, 10, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is False
+
+
+def test_is_past_active_status_date_yesterday(client, db, mock_today):
+    """E. Event with status='active' dated yesterday → is_past = True.
+    Status alone does not determine current/past; the calendar date does."""
+    user = _make_user(db, "past_e@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastE")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Active But Past",
+        start_datetime=datetime(2026, 8, 27, 10, 0),
+        status="active",
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "active"
+    assert data["is_past"] is True
+
+
+def test_list_excludes_yesterday_event(client, db, mock_today):
+    """F. Public event listing excludes events whose calendar date is yesterday."""
+    user = _make_user(db, "past_f@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastF")
+
+    yesterday = Event(
+        organization_id=org.id, category_id=cat.id, title="Past List Event",
+        start_datetime=datetime(2026, 8, 27, 10, 0),
+    )
+    future = Event(
+        organization_id=org.id, category_id=cat.id, title="Future List Event",
+        start_datetime=datetime(2026, 8, 29, 10, 0),
+    )
+    db.add_all([yesterday, future])
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id})
+    assert resp.status_code == 200
+    titles = [e["title"] for e in resp.json()]
+    assert "Past List Event" not in titles
+    assert "Future List Event" in titles
+
+
+def test_list_includes_today_event_regardless_of_start_time(client, db, mock_today):
+    """G. Public event listing includes today's event even after its start time has passed."""
+    user = _make_user(db, "past_g@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastG")
+
+    today_early = Event(
+        organization_id=org.id, category_id=cat.id, title="Today Early",
+        start_datetime=datetime(2026, 8, 28, 8, 0),
+    )
+    today_late = Event(
+        organization_id=org.id, category_id=cat.id, title="Today Late",
+        start_datetime=datetime(2026, 8, 28, 22, 0),
+    )
+    db.add_all([today_early, today_late])
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id})
+    assert resp.status_code == 200
+    titles = [e["title"] for e in resp.json()]
+    assert "Today Early" in titles
+    assert "Today Late" in titles
+
+
+def test_org_include_past_returns_past_events_with_is_past_true(client, db, mock_today):
+    """I/J. With include_past=true, past events are returned and flagged; current are not flagged."""
+    user = _make_user(db, "past_ij@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastIJ")
+
+    yesterday = Event(
+        organization_id=org.id, category_id=cat.id, title="Org Past Event",
+        start_datetime=datetime(2026, 8, 27, 10, 0),
+    )
+    tomorrow = Event(
+        organization_id=org.id, category_id=cat.id, title="Org Current Event",
+        start_datetime=datetime(2026, 8, 29, 10, 0),
+    )
+    db.add_all([yesterday, tomorrow])
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id, "include_past": "true"})
+    assert resp.status_code == 200
+    events = {e["title"]: e for e in resp.json()}
+
+    assert "Org Past Event" in events
+    assert events["Org Past Event"]["is_past"] is True
+
+    assert "Org Current Event" in events
+    assert events["Org Current Event"]["is_past"] is False
+
+
+def test_related_events_exclude_past(client, db, mock_today):
+    """K. Public listing (no include_past) excludes past events — related/other events use this endpoint."""
+    user = _make_user(db, "past_k@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "PastK")
+
+    past = Event(
+        organization_id=org.id, category_id=cat.id, title="Related Past",
+        start_datetime=datetime(2026, 8, 27, 9, 0),
+    )
+    current = Event(
+        organization_id=org.id, category_id=cat.id, title="Related Current",
+        start_datetime=datetime(2026, 8, 29, 9, 0),
+    )
+    db.add_all([past, current])
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id})
+    assert resp.status_code == 200
+    titles = [e["title"] for e in resp.json()]
+    assert "Related Past" not in titles
+    assert "Related Current" in titles
+
+
+# ── end_datetime-aware past/current logic ─────────────────────────────────────
+#
+# Fixtures that pin _local_now() to a specific Israel-local naive datetime.
+# Tests for null end_datetime continue to use mock_today (patches _israel_today).
+
+# A fixed "current time" of 12:00 on 2026-08-29 (between start=10:00 and end=13:00).
+_NOON = datetime(2026, 8, 29, 12, 0, 0)
+# A fixed "current time" of 14:00 on 2026-08-29 (after end=13:00).
+_AFTERNOON = datetime(2026, 8, 29, 14, 0, 0)
+
+
+@pytest.fixture
+def mock_now_noon():
+    """Pin _local_now() to 12:00 on 2026-08-29."""
+    with patch("app.api.events._local_now", return_value=_NOON):
+        yield _NOON
+
+
+@pytest.fixture
+def mock_now_afternoon():
+    """Pin _local_now() to 14:00 on 2026-08-29."""
+    with patch("app.api.events._local_now", return_value=_AFTERNOON):
+        yield _AFTERNOON
+
+
+# ── is_past: end_datetime present ─────────────────────────────────────────────
+
+def test_is_past_end_datetime_clearly_in_past(client, db):
+    """end_datetime in 2020 → is_past=True regardless of now."""
+    user = _make_user(db, "ep_past@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "EPPast")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Ended 2020",
+        start_datetime=datetime(2020, 1, 1, 10, 0),
+        end_datetime=datetime(2020, 1, 1, 13, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is True
+
+
+def test_is_past_end_datetime_clearly_in_future(client, db):
+    """end_datetime in 2099 → is_past=False regardless of now."""
+    user = _make_user(db, "ep_future@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "EPFuture")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Ends 2099",
+        start_datetime=datetime(2099, 1, 1, 10, 0),
+        end_datetime=datetime(2099, 1, 1, 13, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is False
+
+
+def test_is_past_end_datetime_elapsed(client, db, mock_now_afternoon):
+    """start=10:00, end=13:00, now=14:00 → is_past=True (end already passed)."""
+    user = _make_user(db, "ep_elapsed@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "EPElapsed")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Elapsed Today",
+        start_datetime=datetime(2026, 8, 29, 10, 0),
+        end_datetime=datetime(2026, 8, 29, 13, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is True
+
+
+def test_is_past_end_datetime_not_yet_elapsed(client, db, mock_now_noon):
+    """start=10:00, end=13:00, now=12:00 → is_past=False (event ongoing)."""
+    user = _make_user(db, "ep_ongoing@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "EPOngoing")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Ongoing",
+        start_datetime=datetime(2026, 8, 29, 10, 0),
+        end_datetime=datetime(2026, 8, 29, 13, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is False
+
+
+# ── GET /events/ filter: end_datetime present ─────────────────────────────────
+
+def test_list_excludes_event_with_past_end_datetime(client, db):
+    """Default listing excludes events whose end_datetime is clearly in the past."""
+    user = _make_user(db, "lep_past@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "LEPPast")
+
+    old = Event(
+        organization_id=org.id, category_id=cat.id, title="Old Ended",
+        start_datetime=datetime(2020, 1, 1, 10, 0),
+        end_datetime=datetime(2020, 1, 1, 13, 0),
+    )
+    future = Event(
+        organization_id=org.id, category_id=cat.id, title="Future Ended",
+        start_datetime=datetime(2099, 1, 1, 10, 0),
+        end_datetime=datetime(2099, 1, 1, 13, 0),
+    )
+    db.add_all([old, future])
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id})
+    assert resp.status_code == 200
+    titles = [e["title"] for e in resp.json()]
+    assert "Old Ended" not in titles
+    assert "Future Ended" in titles
+
+
+def test_list_past_end_datetime_appears_with_include_past(client, db):
+    """include_past=true returns event with past end_datetime, flagged as is_past=True."""
+    user = _make_user(db, "lep_inc@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "LEPInc")
+
+    old = Event(
+        organization_id=org.id, category_id=cat.id, title="Old Inc",
+        start_datetime=datetime(2020, 1, 1, 10, 0),
+        end_datetime=datetime(2020, 1, 1, 13, 0),
+    )
+    db.add(old)
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id, "include_past": "true"})
+    assert resp.status_code == 200
+    data = {e["title"]: e for e in resp.json()}
+    assert "Old Inc" in data
+    assert data["Old Inc"]["is_past"] is True
+
+
+def test_list_ongoing_event_included(client, db, mock_now_noon):
+    """Event ongoing at now=12:00 (start=10:00, end=13:00) is included in default listing."""
+    user = _make_user(db, "lep_ongoing@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "LEPOngoing")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Ongoing Event",
+        start_datetime=datetime(2026, 8, 29, 10, 0),
+        end_datetime=datetime(2026, 8, 29, 13, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id})
+    assert resp.status_code == 200
+    data = {e["title"]: e for e in resp.json()}
+    assert "Ongoing Event" in data
+    assert data["Ongoing Event"]["is_past"] is False
+
+
+def test_list_elapsed_event_excluded_from_default(client, db, mock_now_afternoon):
+    """Event with end=13:00 excluded from default listing when now=14:00; appears with include_past."""
+    user = _make_user(db, "lep_elapsed@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "LEPElapsed")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="Elapsed Event",
+        start_datetime=datetime(2026, 8, 29, 10, 0),
+        end_datetime=datetime(2026, 8, 29, 13, 0),
+    )
+    db.add(event)
+    db.commit()
+
+    # Default listing: excluded (ended)
+    resp = client.get("/events/", params={"organization_id": org.id})
+    assert resp.status_code == 200
+    assert "Elapsed Event" not in [e["title"] for e in resp.json()]
+
+    # With include_past: present and flagged
+    resp2 = client.get("/events/", params={"organization_id": org.id, "include_past": "true"})
+    assert resp2.status_code == 200
+    data = {e["title"]: e for e in resp2.json()}
+    assert "Elapsed Event" in data
+    assert data["Elapsed Event"]["is_past"] is True
+
+
+# ── timezone boundary: null end_datetime stays current all day ─────────────────
+
+def test_null_end_datetime_event_current_all_day(client, db):
+    """Event with no end_datetime stays current throughout its start calendar day.
+    Verified by checking is_past=False for today's event at any 'current' local time."""
+    # Use an extreme future date so no mock is needed: 2099-01-01 is unambiguously future.
+    user = _make_user(db, "allday@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "AllDay")
+
+    event = Event(
+        organization_id=org.id, category_id=cat.id, title="All Day",
+        start_datetime=datetime(2099, 1, 1, 10, 0),
+        end_datetime=None,
+    )
+    db.add(event)
+    db.commit()
+
+    resp = client.get(f"/events/{event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is False
+
+
+def test_null_end_datetime_event_past_next_day(client, db, mock_today):
+    """Event with no end_datetime becomes past the calendar day after start_datetime."""
+    # mock_today pins _israel_today() to FIXED_TODAY = 2026-08-28
+    # Event on 2026-08-27 (yesterday) → past
+    user = _make_user(db, "nextday@test.com")
+    org = _make_org(db)
+    _make_membership(db, org.id, user.id)
+    cat = _make_category(db, "NextDay")
+
+    yesterday_event = Event(
+        organization_id=org.id, category_id=cat.id, title="Yesterday Null End",
+        start_datetime=datetime(2026, 8, 27, 23, 59),  # late in the day, still yesterday
+        end_datetime=None,
+    )
+    db.add(yesterday_event)
+    db.commit()
+
+    resp = client.get(f"/events/{yesterday_event.id}")
+    assert resp.status_code == 200
+    assert resp.json()["is_past"] is True
