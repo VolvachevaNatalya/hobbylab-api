@@ -1,6 +1,11 @@
+import logging
 import os
+import threading
+from collections import defaultdict
+from datetime import datetime, timedelta
+from typing import Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -11,7 +16,42 @@ from app.schemas.user import UserCreate, UserResponse
 from app.core.security import verify_password, create_access_token, hash_password
 from fastapi.security import OAuth2PasswordRequestForm
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# --- In-process IP-based rate limiter for POST /auth/register ---
+# Stores timestamps of recent attempts per IP; trimmed on every check.
+# Works for single-process deployments (Railway default).
+_REGISTRATION_RATE_LIMIT = 3            # max successful-attempt slots per IP
+_REGISTRATION_RATE_WINDOW = timedelta(hours=1)
+
+_reg_attempts: Dict[str, List[datetime]] = defaultdict(list)
+_reg_lock = threading.Lock()
+
+
+def _get_client_ip(request: Request) -> str:
+    # Railway sets X-Real-IP to the original client IP.
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def _check_registration_rate_limit(ip: str) -> None:
+    now = datetime.utcnow()
+    cutoff = now - _REGISTRATION_RATE_WINDOW
+    with _reg_lock:
+        recent = [t for t in _reg_attempts[ip] if t > cutoff]
+        if len(recent) >= _REGISTRATION_RATE_LIMIT:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many registration attempts. Try again later.",
+            )
+        recent.append(now)
+        _reg_attempts[ip] = recent
 
 
 class GoogleLoginRequest(BaseModel):
@@ -50,10 +90,18 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     }
 
 @router.post("/auth/register", response_model=UserResponse)
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
+def create_user(user: UserCreate, request: Request, db: Session = Depends(get_db)):
+    ip = _get_client_ip(request)
+    ua = request.headers.get("User-Agent", "")[:200]
+
+    _check_registration_rate_limit(ip)
 
     existing = db.query(User).filter(User.email == user.email).first()
     if existing:
+        logger.warning(
+            "registration duplicate | endpoint=POST /auth/register | ip=%s | ua=%s | email=%s",
+            ip, ua, user.email,
+        )
         raise HTTPException(status_code=400, detail="Email already registered")
 
     hashed = hash_password(user.password)
@@ -65,12 +113,17 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         avatar_url=user.avatar_url,
         provider=user.provider,
         provider_user_id=user.provider_user_id,
-        password_hash=hashed
+        password_hash=hashed,
     )
 
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    logger.info(
+        "registration success | endpoint=POST /auth/register | ip=%s | ua=%s | email=%s | user_id=%d",
+        ip, ua, db_user.email, db_user.id,
+    )
 
     return db_user
 
