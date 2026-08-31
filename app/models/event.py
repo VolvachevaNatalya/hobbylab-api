@@ -25,6 +25,7 @@ class Event(Base):
 
     min_age = Column(Integer)
     max_age = Column(Integer)
+    age_groups = Column(Text, nullable=True)
     capacity = Column(Integer)
 
     image_url = Column(Text)

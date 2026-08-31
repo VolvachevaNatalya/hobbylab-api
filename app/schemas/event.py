@@ -1,11 +1,35 @@
+import json
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.category import CategoryResponse
 from app.schemas.event_series import RecurrenceCreate, RecurrenceResponse
+
+# ── Age-group definitions ─────────────────────────────────────────────────────
+# Canonical mapping from group key → (min_inclusive, max_inclusive).
+# "custom" has no fixed range — it delegates to Event.min_age / Event.max_age.
+
+VALID_AGE_GROUPS = frozenset({"toddlers", "kids", "teens", "adults", "family", "custom"})
+
+AGE_GROUP_RANGES: Dict[str, Tuple[int, int]] = {
+    "toddlers": (2, 5),
+    "kids":     (6, 11),
+    "teens":    (12, 17),
+    "adults":   (18, 120),
+    "family":   (0, 120),
+}
+
+
+def _validate_age_groups_list(groups: List[str]) -> List[str]:
+    invalid = [g for g in groups if g not in VALID_AGE_GROUPS]
+    if invalid:
+        raise ValueError(f"Unknown age groups: {invalid}. Allowed: {sorted(VALID_AGE_GROUPS)}")
+    if len(set(groups)) != len(groups):
+        raise ValueError("Duplicate age groups are not allowed")
+    return groups
 
 
 class EventCreate(BaseModel):
@@ -20,6 +44,8 @@ class EventCreate(BaseModel):
 
     min_age: Optional[int] = None
     max_age: Optional[int] = None
+    age_groups: Optional[List[str]] = None
+
     capacity: Optional[int] = None
 
     image_url: Optional[str] = None
@@ -43,6 +69,7 @@ class EventCreate(BaseModel):
 
     @model_validator(mode='after')
     def resolve_and_validate_categories(self) -> 'EventCreate':
+        # ── Category resolution ───────────────────────────────────────────────
         if self.category_ids is not None:
             ids = self.category_ids
         elif self.category_id is not None:
@@ -56,6 +83,22 @@ class EventCreate(BaseModel):
         if len(set(ids)) != len(ids):
             raise ValueError("Duplicate category IDs are not allowed")
         self.category_ids = ids
+
+        # ── Age groups validation ─────────────────────────────────────────────
+        if self.age_groups is not None:
+            if len(self.age_groups) == 0:
+                self.age_groups = None  # treat empty as absent
+            else:
+                self.age_groups = _validate_age_groups_list(self.age_groups)
+                if "custom" in self.age_groups:
+                    if self.min_age is not None and not (0 <= self.min_age <= 120):
+                        raise ValueError("min_age must be between 0 and 120")
+                    if self.max_age is not None and not (0 <= self.max_age <= 120):
+                        raise ValueError("max_age must be between 0 and 120")
+                    if (self.min_age is not None and self.max_age is not None
+                            and self.min_age > self.max_age):
+                        raise ValueError("min_age must be <= max_age for custom age group")
+
         return self
 
 
@@ -69,6 +112,8 @@ class EventResponse(BaseModel):
 
     min_age: Optional[int]
     max_age: Optional[int]
+    age_groups: Optional[List[str]] = None
+
     capacity: Optional[int]
 
     image_url: Optional[str]
@@ -105,9 +150,25 @@ class EventResponse(BaseModel):
     category_name: Optional[str] = None
     categories: List[CategoryResponse] = []
 
-    # Computed: True when the event's LOCAL calendar date is before today's LOCAL calendar date.
-    # An event remains non-past for its entire calendar day regardless of its start time.
+    # Computed
     is_past: bool = False
+
+    @field_validator("age_groups", mode="before")
+    @classmethod
+    def parse_age_groups(cls, v):
+        """Deserialize JSON string from TEXT column back to a Python list."""
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return None
 
     class Config:
         from_attributes = True
@@ -119,6 +180,8 @@ class EventUpdate(BaseModel):
 
     min_age: Optional[int] = None
     max_age: Optional[int] = None
+    age_groups: Optional[List[str]] = None
+
     capacity: Optional[int] = None
 
     image_url: Optional[str] = None
@@ -153,3 +216,21 @@ class EventUpdate(BaseModel):
         if len(set(v)) != len(v):
             raise ValueError("Duplicate category IDs are not allowed")
         return v
+
+    @model_validator(mode='after')
+    def validate_age_groups_and_custom_range(self) -> 'EventUpdate':
+        if self.age_groups is None:
+            return self
+        if len(self.age_groups) == 0:
+            self.age_groups = None
+            return self
+        self.age_groups = _validate_age_groups_list(self.age_groups)
+        if "custom" in self.age_groups:
+            if self.min_age is not None and not (0 <= self.min_age <= 120):
+                raise ValueError("min_age must be between 0 and 120")
+            if self.max_age is not None and not (0 <= self.max_age <= 120):
+                raise ValueError("max_age must be between 0 and 120")
+            if (self.min_age is not None and self.max_age is not None
+                    and self.min_age > self.max_age):
+                raise ValueError("min_age must be <= max_age for custom age group")
+        return self

@@ -10,7 +10,7 @@ from app.models.organization_user import OrganizationUser
 MEANINGFUL_UPDATE_FIELDS = frozenset({
     "title", "description", "start_datetime", "end_datetime",
     "address", "city", "city_id", "price", "price_comment",
-    "min_age", "max_age", "capacity", "is_nationwide",
+    "min_age", "max_age", "age_groups", "capacity", "is_nationwide",
 })
 
 

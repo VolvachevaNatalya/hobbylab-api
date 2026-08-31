@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, date as date_type, time as time_type
 from typing import List, Optional
 
@@ -19,7 +20,7 @@ from app.models.organization_user import OrganizationUser
 from app.models.promotion import Promotion
 from app.models.user import User
 from app.schemas.category import CategoryResponse
-from app.schemas.event import EventCreate, EventResponse, EventUpdate
+from app.schemas.event import AGE_GROUP_RANGES, EventCreate, EventResponse, EventUpdate
 from app.schemas.event_series import RecurrenceCreate, RecurrenceResponse
 from app.core.event_notifications import (
     has_meaningful_change,
@@ -67,7 +68,7 @@ def _local_now() -> datetime:
 
 # ── Shared field names that can be bulk-applied across occurrences ─────────────
 _SHARED_EVENT_FIELDS = frozenset({
-    "title", "description", "min_age", "max_age", "capacity",
+    "title", "description", "min_age", "max_age", "age_groups", "capacity",
     "image_url", "banner_url", "address", "city", "city_id",
     "latitude", "longitude", "is_nationwide", "price", "price_comment", "status",
 })
@@ -190,6 +191,27 @@ def _category_filter(category_id: Optional[int]):
     )
 
 
+def _age_group_filter(age: int):
+    """WHERE condition matching events whose age_groups include the given age.
+
+    Events with no age_groups (NULL) pass through — they are open to all ages.
+    For named groups the age must fall within the group's fixed range.
+    For the "custom" group the age must fall within Event.min_age / Event.max_age.
+    """
+    conditions = [Event.age_groups.is_(None)]
+    for group, (lo, hi) in AGE_GROUP_RANGES.items():
+        if lo <= age <= hi:
+            conditions.append(Event.age_groups.like(f'%"{group}"%'))
+    conditions.append(
+        and_(
+            Event.age_groups.like('%"custom"%'),
+            or_(Event.min_age.is_(None), Event.min_age <= age),
+            or_(Event.max_age.is_(None), Event.max_age >= age),
+        )
+    )
+    return or_(*conditions)
+
+
 def _haversine(lat: float, lng: float, lat_col, lng_col):
     return 6371 * func.acos(
         func.least(
@@ -232,6 +254,7 @@ def _build_shared_fields(template: Event, overrides: dict) -> dict:
         "description": overrides.get("description", template.description),
         "min_age": overrides.get("min_age", template.min_age),
         "max_age": overrides.get("max_age", template.max_age),
+        "age_groups": overrides.get("age_groups", template.age_groups),
         "capacity": overrides.get("capacity", template.capacity),
         "image_url": overrides.get("image_url", template.image_url),
         "banner_url": overrides.get("banner_url", template.banner_url),
@@ -871,6 +894,7 @@ def get_events(
     series_id: Optional[int] = None,
     category_id: Optional[int] = None,
     city_id: Optional[int] = None,
+    age: Optional[int] = None,
     user_latitude: Optional[float] = None,
     user_longitude: Optional[float] = None,
     radius_km: float = 25,
@@ -878,6 +902,7 @@ def get_events(
     db: Session = Depends(get_db),
 ):
     cat_filter = _category_filter(category_id)
+    age_filter = _age_group_filter(age) if age is not None else None
 
     if user_latitude is not None and user_longitude is not None:
         now = datetime.utcnow()
@@ -911,6 +936,8 @@ def get_events(
             query = query.filter(Event.series_id == series_id)
         if cat_filter is not None:
             query = query.filter(cat_filter)
+        if age_filter is not None:
+            query = query.filter(age_filter)
         if city_id is not None:
             query = query.filter(or_(
                 Event.city_id == city_id,
@@ -947,6 +974,8 @@ def get_events(
         query = query.filter(Event.series_id == series_id)
     if cat_filter is not None:
         query = query.filter(cat_filter)
+    if age_filter is not None:
+        query = query.filter(age_filter)
     if city_id is not None:
         query = query.filter(or_(
             Event.city_id == city_id,
@@ -983,6 +1012,8 @@ def create_event(
     event_data = event.model_dump()
     category_ids = event_data.pop("category_ids")
     event_data.pop("recurrence", None)
+    if isinstance(event_data.get("age_groups"), list):
+        event_data["age_groups"] = json.dumps(event_data["age_groups"])
 
     _validate_category_ids(category_ids, db)
     city_name_en = _validate_city_id(event_data.get("city_id"), db)
@@ -1075,6 +1106,8 @@ def update_event(
     update_data = event_update.model_dump(exclude_unset=True)
     category_ids: Optional[List[int]] = update_data.pop("category_ids", None)
     update_data.pop("recurrence", None)
+    if isinstance(update_data.get("age_groups"), list):
+        update_data["age_groups"] = json.dumps(update_data["age_groups"])
 
     original_id = event.id
     original_title = event.title
