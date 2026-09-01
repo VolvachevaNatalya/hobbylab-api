@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, TIMESTAMP
+from sqlalchemy import Boolean, Column, Integer, String, Text, TIMESTAMP
 from sqlalchemy.sql import func
 from app.db.database import Base
 
@@ -22,3 +22,5 @@ class User(Base):
     created_at = Column(TIMESTAMP, server_default=func.now())
 
     status = Column(String(50), default="active")
+
+    is_system_admin = Column(Boolean, nullable=False, default=False, server_default="false")

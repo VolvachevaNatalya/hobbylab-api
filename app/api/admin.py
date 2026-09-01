@@ -5,12 +5,17 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.core.auth import require_system_admin
 from app.db.dependencies import get_db
 from app.models.event import Event
 from app.models.organization import Organization
 from app.services.geocoding import geocode
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_system_admin)],
+)
 
 
 @router.post("/test-webdav")
