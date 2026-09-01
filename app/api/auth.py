@@ -133,15 +133,15 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
     from google.oauth2 import id_token as google_id_token
     from google.auth.transport import requests as google_requests
 
-    client_id = os.getenv("GOOGLE_CLIENT_ID")
-    if not client_id:
+    client_ids = [cid.strip() for cid in os.getenv("GOOGLE_CLIENT_ID", "").split(",") if cid.strip()]
+    if not client_ids:
         raise HTTPException(status_code=500, detail="Google login not configured on server")
 
     try:
         id_info = google_id_token.verify_oauth2_token(
             payload.id_token,
             google_requests.Request(),
-            client_id,
+            client_ids,
         )
     except ValueError as e:
         raise HTTPException(status_code=401, detail=f"Invalid Google token: {e}")
