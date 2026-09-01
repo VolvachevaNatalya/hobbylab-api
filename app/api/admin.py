@@ -1,8 +1,8 @@
 import io
 import os
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import or_
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_system_admin
@@ -25,6 +25,39 @@ def admin_me(current_user: User = Depends(require_system_admin)):
         "id":    current_user.id,
         "email": current_user.email,
         "name":  current_user.name,
+    }
+
+
+@router.get("/users")
+def admin_list_users(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    total = db.query(func.count(User.id)).scalar()
+    users = (
+        db.query(User)
+        .order_by(User.created_at.desc(), User.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id":             u.id,
+                "name":           u.name,
+                "email":          u.email,
+                "provider":       u.provider,
+                "status":         u.status,
+                "is_system_admin": u.is_system_admin,
+                "created_at":     u.created_at,
+            }
+            for u in users
+        ],
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
     }
 
 
