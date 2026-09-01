@@ -9,6 +9,7 @@ from app.core.auth import require_system_admin
 from app.db.dependencies import get_db
 from app.models.event import Event
 from app.models.organization import Organization
+from app.models.user import User
 from app.services.geocoding import geocode
 
 router = APIRouter(
@@ -16,6 +17,15 @@ router = APIRouter(
     tags=["admin"],
     dependencies=[Depends(require_system_admin)],
 )
+
+
+@router.get("/me")
+def admin_me(current_user: User = Depends(require_system_admin)):
+    return {
+        "id":    current_user.id,
+        "email": current_user.email,
+        "name":  current_user.name,
+    }
 
 
 @router.post("/test-webdav")

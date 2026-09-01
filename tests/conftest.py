@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.db.database import Base
 from app.db.dependencies import get_db
+from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.organizations import router as org_router
 from app.api.organization_invites import router as org_invites_router, resolve_router as invite_resolve_router
@@ -55,6 +56,7 @@ import app.models.support_request            # noqa: F401
 
 # Minimal app — avoids importing modules with Python-3.9-only syntax (e.g. upload.py).
 app = FastAPI()
+app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(cities_router)
 app.include_router(org_router)
