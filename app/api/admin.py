@@ -77,29 +77,28 @@ def admin_list_organizations(
         .all()
     )
 
-    # Fetch all owners for this page in one query — no N+1.
+    # Fetch all org members for this page in one query — no N+1.
     org_ids = [o.id for o in orgs]
-    owner_rows = (
+    member_rows = (
         db.query(
             OrganizationUser.organization_id,
+            OrganizationUser.role,
             User.id.label("user_id"),
             User.name.label("user_name"),
             User.email.label("user_email"),
         )
         .join(User, User.id == OrganizationUser.user_id)
-        .filter(
-            OrganizationUser.organization_id.in_(org_ids),
-            OrganizationUser.role == "owner",
-        )
+        .filter(OrganizationUser.organization_id.in_(org_ids))
         .all()
     ) if org_ids else []
 
-    owners_by_org: dict = {}
-    for row in owner_rows:
-        owners_by_org.setdefault(row.organization_id, []).append({
+    users_by_org: dict = {}
+    for row in member_rows:
+        users_by_org.setdefault(row.organization_id, []).append({
             "id":    row.user_id,
             "name":  row.user_name,
             "email": row.user_email,
+            "role":  row.role,
         })
 
     return {
@@ -114,7 +113,7 @@ def admin_list_organizations(
                 "status":     o.status,
                 "verified":   o.verified,
                 "created_at": o.created_at,
-                "owners":     owners_by_org.get(o.id, []),
+                "users":      users_by_org.get(o.id, []),
             }
             for o in orgs
         ],

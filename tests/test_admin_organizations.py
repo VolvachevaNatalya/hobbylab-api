@@ -6,7 +6,7 @@ from app.models.user import User
 
 _EXPECTED_ORG_FIELDS = {
     "id", "name", "email", "phone", "city", "city_id",
-    "status", "verified", "created_at", "owners",
+    "status", "verified", "created_at", "users",
 }
 
 
@@ -26,8 +26,8 @@ def _make_org(db, name="Org", status="active"):
     return o
 
 
-def _make_owner(db, org_id, user_id):
-    m = OrganizationUser(organization_id=org_id, user_id=user_id, role="owner")
+def _make_member(db, org_id, user_id, role="owner"):
+    m = OrganizationUser(organization_id=org_id, user_id=user_id, role=role)
     db.add(m)
     db.commit()
     return m
@@ -91,33 +91,87 @@ def test_admin_orgs_no_sensitive_fields(client, db):
         assert "logo_url" not in item
 
 
-# ── Owner information ──────────────────────────────────────────────────────────
+# ── Organization users ─────────────────────────────────────────────────────────
 
-def test_admin_orgs_owners_included(client, db):
+def test_admin_orgs_owner_included(client, db):
     admin = _make_user(db, "ao_own_adm@x.com", is_system_admin=True)
     owner = _make_user(db, "ao_owner@x.com")
     org = _make_org(db, name="OwnedOrg")
-    _make_owner(db, org.id, owner.id)
+    _make_member(db, org.id, owner.id, role="owner")
 
     resp = client.get("/admin/organizations", headers=_auth(admin.id))
-    items = resp.json()["items"]
-    item = next(i for i in items if i["name"] == "OwnedOrg")
-    assert len(item["owners"]) == 1
-    o = item["owners"][0]
-    assert o["id"] == owner.id
-    assert o["email"] == "ao_owner@x.com"
-    assert "password_hash" not in o
-    assert set(o.keys()) == {"id", "name", "email"}
+    item = next(i for i in resp.json()["items"] if i["name"] == "OwnedOrg")
+    assert len(item["users"]) == 1
+    u = item["users"][0]
+    assert u["id"] == owner.id
+    assert u["email"] == "ao_owner@x.com"
+    assert u["role"] == "owner"
+    assert set(u.keys()) == {"id", "name", "email", "role"}
+    assert "password_hash" not in u
 
 
-def test_admin_orgs_no_owner_returns_empty_list(client, db):
+def test_admin_orgs_admin_role_included(client, db):
+    admin = _make_user(db, "ao_adm_adm@x.com", is_system_admin=True)
+    member = _make_user(db, "ao_admin_member@x.com")
+    org = _make_org(db, name="AdminRoleOrg")
+    _make_member(db, org.id, member.id, role="admin")
+
+    resp = client.get("/admin/organizations", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["name"] == "AdminRoleOrg")
+    assert len(item["users"]) == 1
+    assert item["users"][0]["role"] == "admin"
+
+
+def test_admin_orgs_member_role_included(client, db):
+    admin = _make_user(db, "ao_mem_adm@x.com", is_system_admin=True)
+    member = _make_user(db, "ao_member@x.com")
+    org = _make_org(db, name="MemberRoleOrg")
+    _make_member(db, org.id, member.id, role="member")
+
+    resp = client.get("/admin/organizations", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["name"] == "MemberRoleOrg")
+    assert len(item["users"]) == 1
+    assert item["users"][0]["role"] == "member"
+
+
+def test_admin_orgs_multiple_roles_all_returned(client, db):
+    admin = _make_user(db, "ao_multi_adm@x.com", is_system_admin=True)
+    owner  = _make_user(db, "ao_multi_own@x.com")
+    adm    = _make_user(db, "ao_multi_adm_member@x.com")
+    member = _make_user(db, "ao_multi_mem@x.com")
+    org = _make_org(db, name="MultiRoleOrg")
+    _make_member(db, org.id, owner.id,  role="owner")
+    _make_member(db, org.id, adm.id,    role="admin")
+    _make_member(db, org.id, member.id, role="member")
+
+    resp = client.get("/admin/organizations", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["name"] == "MultiRoleOrg")
+    assert len(item["users"]) == 3
+    roles = {u["role"] for u in item["users"]}
+    assert roles == {"owner", "admin", "member"}
+
+
+def test_admin_orgs_no_users_returns_empty_list(client, db):
     admin = _make_user(db, "ao_noown_adm@x.com", is_system_admin=True)
-    _make_org(db, name="OwnerlessOrg")
+    _make_org(db, name="NoUsersOrg")
 
     resp = client.get("/admin/organizations", headers=_auth(admin.id))
-    items = resp.json()["items"]
-    item = next(i for i in items if i["name"] == "OwnerlessOrg")
-    assert item["owners"] == []
+    item = next(i for i in resp.json()["items"] if i["name"] == "NoUsersOrg")
+    assert item["users"] == []
+
+
+def test_admin_orgs_user_fields_no_sensitive_data(client, db):
+    admin  = _make_user(db, "ao_usafe_adm@x.com", is_system_admin=True)
+    member = _make_user(db, "ao_usafe_mem@x.com")
+    org = _make_org(db, name="SafeUserFieldsOrg")
+    _make_member(db, org.id, member.id, role="owner")
+
+    resp = client.get("/admin/organizations", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["name"] == "SafeUserFieldsOrg")
+    for u in item["users"]:
+        assert "password_hash" not in u
+        assert "provider_user_id" not in u
+        assert set(u.keys()) == {"id", "name", "email", "role"}
 
 
 # ── Pagination ─────────────────────────────────────────────────────────────────
