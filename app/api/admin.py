@@ -9,6 +9,7 @@ from app.core.auth import require_system_admin
 from app.db.dependencies import get_db
 from app.models.event import Event
 from app.models.organization import Organization
+from app.models.organization_user import OrganizationUser
 from app.models.user import User
 from app.services.geocoding import geocode
 
@@ -54,6 +55,68 @@ def admin_list_users(
                 "created_at":     u.created_at,
             }
             for u in users
+        ],
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
+    }
+
+
+@router.get("/organizations")
+def admin_list_organizations(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    total = db.query(func.count(Organization.id)).scalar()
+    orgs = (
+        db.query(Organization)
+        .order_by(Organization.created_at.desc(), Organization.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # Fetch all owners for this page in one query — no N+1.
+    org_ids = [o.id for o in orgs]
+    owner_rows = (
+        db.query(
+            OrganizationUser.organization_id,
+            User.id.label("user_id"),
+            User.name.label("user_name"),
+            User.email.label("user_email"),
+        )
+        .join(User, User.id == OrganizationUser.user_id)
+        .filter(
+            OrganizationUser.organization_id.in_(org_ids),
+            OrganizationUser.role == "owner",
+        )
+        .all()
+    ) if org_ids else []
+
+    owners_by_org: dict = {}
+    for row in owner_rows:
+        owners_by_org.setdefault(row.organization_id, []).append({
+            "id":    row.user_id,
+            "name":  row.user_name,
+            "email": row.user_email,
+        })
+
+    return {
+        "items": [
+            {
+                "id":         o.id,
+                "name":       o.name,
+                "email":      o.email,
+                "phone":      o.phone,
+                "city":       o.city,
+                "city_id":    o.city_id,
+                "status":     o.status,
+                "verified":   o.verified,
+                "created_at": o.created_at,
+                "owners":     owners_by_org.get(o.id, []),
+            }
+            for o in orgs
         ],
         "total":  total,
         "limit":  limit,
