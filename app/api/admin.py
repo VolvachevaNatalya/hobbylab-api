@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import require_system_admin
 from app.db.dependencies import get_db
+from app.models.category import Category
 from app.models.event import Event
+from app.models.event_category import EventCategory
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
 from app.models.user import User
@@ -116,6 +118,85 @@ def admin_list_organizations(
                 "users":      users_by_org.get(o.id, []),
             }
             for o in orgs
+        ],
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
+    }
+
+
+@router.get("/events")
+def admin_list_events(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    total = db.query(func.count(Event.id)).scalar()
+    events = (
+        db.query(Event)
+        .order_by(Event.created_at.desc(), Event.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # Bulk org names — one query for all distinct orgs on this page.
+    org_ids = list({e.organization_id for e in events if e.organization_id})
+    org_name_map: dict = {}
+    if org_ids:
+        rows = (
+            db.query(Organization.id, Organization.name)
+            .filter(Organization.id.in_(org_ids))
+            .all()
+        )
+        org_name_map = {r.id: r.name for r in rows}
+
+    # Bulk categories — one query for all events on this page.
+    event_ids = [e.id for e in events]
+    cat_rows = (
+        db.query(
+            EventCategory.event_id,
+            Category.id.label("cat_id"),
+            Category.name,
+            Category.name_en,
+            Category.name_ru,
+            Category.name_he,
+        )
+        .join(Category, Category.id == EventCategory.category_id)
+        .filter(EventCategory.event_id.in_(event_ids))
+        .order_by(EventCategory.event_id, EventCategory.position)
+        .all()
+    ) if event_ids else []
+
+    cats_by_event: dict = {}
+    for row in cat_rows:
+        cats_by_event.setdefault(row.event_id, []).append({
+            "id":      row.cat_id,
+            "name":    row.name,
+            "name_en": row.name_en,
+            "name_ru": row.name_ru,
+            "name_he": row.name_he,
+        })
+
+    return {
+        "items": [
+            {
+                "id":                e.id,
+                "title":             e.title,
+                "status":            e.status,
+                "start_datetime":    e.start_datetime,
+                "end_datetime":      e.end_datetime,
+                "created_at":        e.created_at,
+                "city":              e.city,
+                "city_id":           e.city_id,
+                "price":             float(e.price) if e.price is not None else None,
+                "is_nationwide":     e.is_nationwide,
+                "series_id":         e.series_id,
+                "organization_id":   e.organization_id,
+                "organization_name": org_name_map.get(e.organization_id),
+                "categories":        cats_by_event.get(e.id, []),
+            }
+            for e in events
         ],
         "total":  total,
         "limit":  limit,
