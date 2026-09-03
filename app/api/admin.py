@@ -204,6 +204,38 @@ def admin_list_events(
     }
 
 
+@router.get("/categories")
+def admin_list_categories(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    total = db.query(func.count(Category.id)).scalar()
+    categories = (
+        db.query(Category)
+        .order_by(Category.id.asc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return {
+        "items": [
+            {
+                "id":      c.id,
+                "name":    c.name,
+                "name_en": c.name_en,
+                "name_ru": c.name_ru,
+                "name_he": c.name_he,
+                "icon_url": c.icon_url,
+            }
+            for c in categories
+        ],
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
+    }
+
+
 @router.post("/test-webdav")
 def test_webdav():
     from webdav3.client import Client
