@@ -1,18 +1,21 @@
 import io
 import os
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_system_admin
 from app.db.dependencies import get_db
 from app.models.category import Category
+from app.models.classes import Class
 from app.models.event import Event
 from app.models.event_category import EventCategory
 from app.models.organization import Organization
+from app.models.organization_category import OrganizationCategory
 from app.models.organization_user import OrganizationUser
 from app.models.user import User
+from app.schemas.category import AdminCategoryUpdate, CategoryCreate
 from app.services.geocoding import geocode
 
 router = APIRouter(
@@ -204,6 +207,17 @@ def admin_list_events(
     }
 
 
+def _category_dict(c: Category) -> dict:
+    return {
+        "id":       c.id,
+        "name":     c.name,
+        "name_en":  c.name_en,
+        "name_ru":  c.name_ru,
+        "name_he":  c.name_he,
+        "icon_url": c.icon_url,
+    }
+
+
 @router.get("/categories")
 def admin_list_categories(
     limit: int = Query(default=50, ge=1, le=100),
@@ -234,6 +248,76 @@ def admin_list_categories(
         "limit":  limit,
         "offset": offset,
     }
+
+
+@router.post("/categories")
+def admin_create_category(
+    payload: CategoryCreate,
+    db: Session = Depends(get_db),
+):
+    category = Category(**payload.model_dump())
+    db.add(category)
+    db.commit()
+    db.refresh(category)
+    return _category_dict(category)
+
+
+@router.patch("/categories/{category_id}")
+def admin_update_category(
+    category_id: int,
+    payload: AdminCategoryUpdate,
+    db: Session = Depends(get_db),
+):
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(category, key, value)
+    db.commit()
+    db.refresh(category)
+    return _category_dict(category)
+
+
+@router.delete("/categories/{category_id}")
+def admin_delete_category(
+    category_id: int,
+    db: Session = Depends(get_db),
+):
+    category = db.query(Category).filter(Category.id == category_id).first()
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    # events.category_id and classes.category_id have no ondelete clause,
+    # so PostgreSQL would RESTRICT the delete. Reject explicitly here so
+    # the 409 is clear and consistent across all DB backends.
+    in_use = (
+        db.query(func.count(EventCategory.event_id))
+        .filter(EventCategory.category_id == category_id)
+        .scalar() > 0
+        or
+        db.query(func.count(Event.id))
+        .filter(Event.category_id == category_id)
+        .scalar() > 0
+        or
+        db.query(func.count(Class.id))
+        .filter(Class.category_id == category_id)
+        .scalar() > 0
+    )
+    if in_use:
+        raise HTTPException(
+            status_code=409,
+            detail="Category is in use by events or classes and cannot be deleted",
+        )
+
+    # OrganizationCategory has ondelete=CASCADE in PostgreSQL, but SQLite does
+    # not enforce FK constraints, so delete the junction rows explicitly.
+    db.query(OrganizationCategory).filter(
+        OrganizationCategory.category_id == category_id
+    ).delete(synchronize_session=False)
+
+    db.delete(category)
+    db.commit()
+    return {"message": "Category deleted"}
 
 
 @router.post("/test-webdav")

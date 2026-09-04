@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional
 
 
@@ -28,3 +28,11 @@ class CategoryUpdate(BaseModel):
     name_ru: Optional[str] = None
     name_he: Optional[str] = None
     icon_url: Optional[str] = None
+
+
+class AdminCategoryUpdate(CategoryUpdate):
+    @model_validator(mode='after')
+    def name_not_null(self):
+        if self.name is None and "name" in self.model_fields_set:
+            raise ValueError("name cannot be null")
+        return self
