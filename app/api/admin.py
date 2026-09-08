@@ -237,6 +237,17 @@ def admin_create_organization(
     return _admin_org_dict(org, db)
 
 
+@router.get("/organizations/{organization_id}")
+def admin_get_organization(
+    organization_id: int,
+    db: Session = Depends(get_db),
+):
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return _admin_org_dict(org, db)
+
+
 @router.patch("/organizations/{organization_id}")
 def admin_update_organization(
     organization_id: int,

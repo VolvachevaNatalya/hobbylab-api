@@ -325,6 +325,104 @@ def test_admin_org_patch_malformed_email_accepted(client, db):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# GET /admin/organizations/{organization_id}
+# ══════════════════════════════════════════════════════════════════════════════
+
+def test_admin_org_get_200_for_system_admin(client, db):
+    admin = _make_user(db, "get_adm@x.com", is_system_admin=True)
+    org = _make_org(db, name="GetOrg")
+    resp = client.get(f"/admin/organizations/{org.id}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+
+def test_admin_org_get_403_for_normal_user(client, db):
+    user = _make_user(db, "get_usr@x.com")
+    org = _make_org(db, name="ForbidGet")
+    resp = client.get(f"/admin/organizations/{org.id}", headers=_auth(user.id))
+    assert resp.status_code == 403
+
+
+def test_admin_org_get_401_for_unauthenticated(client, db):
+    org = _make_org(db, name="AnonGet")
+    resp = client.get(f"/admin/organizations/{org.id}")
+    assert resp.status_code == 401
+
+
+def test_admin_org_get_404_for_missing_org(client, db):
+    admin = _make_user(db, "get_404@x.com", is_system_admin=True)
+    resp = client.get("/admin/organizations/999999", headers=_auth(admin.id))
+    assert resp.status_code == 404
+
+
+def test_admin_org_get_full_fields_returned(client, db):
+    admin = _make_user(db, "get_fld@x.com", is_system_admin=True)
+    org = _make_org(db, name="FullGetOrg")
+    resp = client.get(f"/admin/organizations/{org.id}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+    assert set(resp.json().keys()) == _EXPECTED_ORG_RESPONSE_FIELDS
+
+
+def test_admin_org_get_categories_returned(client, db):
+    admin = _make_user(db, "get_cat@x.com", is_system_admin=True)
+    cat = _make_category(db, "GetCat")
+    org = _make_org(db, name="CatGetOrg")
+    db.add(OrganizationCategory(organization_id=org.id, category_id=cat.id, position=0))
+    db.commit()
+    resp = client.get(f"/admin/organizations/{org.id}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+    cats = resp.json()["categories"]
+    assert len(cats) == 1
+    assert cats[0]["id"] == cat.id
+
+
+def test_admin_org_get_users_and_roles_returned(client, db):
+    admin = _make_user(db, "get_usr_adm@x.com", is_system_admin=True)
+    owner = _make_user(db, "get_owner@x.com", name="OrgOwner")
+    org = _make_org(db, name="UsersGetOrg")
+    _make_org_user(db, org.id, owner.id, role="owner")
+    resp = client.get(f"/admin/organizations/{org.id}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+    users = resp.json()["users"]
+    assert len(users) == 1
+    assert users[0]["id"] == owner.id
+    assert users[0]["role"] == "owner"
+    assert users[0]["email"] == "get_owner@x.com"
+
+
+def test_admin_org_get_city_id_preserved(client, db):
+    from app.models.city import City as CityModel
+    admin = _make_user(db, "get_city@x.com", is_system_admin=True)
+    city = CityModel(name_he="תל אביב", name_en="Tel Aviv", name_ru="Тель-Авив", is_active=True)
+    db.add(city)
+    db.commit()
+    db.refresh(city)
+    org = _make_org(db, name="CityGetOrg")
+    org.city_id = city.id
+    org.city = "Tel Aviv"
+    db.commit()
+    resp = client.get(f"/admin/organizations/{org.id}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["city_id"] == city.id
+    assert data["city"] == "Tel Aviv"
+
+
+def test_admin_org_get_trial_lesson_values_preserved(client, db):
+    admin = _make_user(db, "get_trl@x.com", is_system_admin=True)
+    org = _make_org(db, name="TrialGetOrg")
+    org.trial_lesson_available = True
+    org.trial_lesson_price = 50.0
+    org.trial_lesson_comment = "First lesson free"
+    db.commit()
+    resp = client.get(f"/admin/organizations/{org.id}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["trial_lesson_available"] is True
+    assert data["trial_lesson_price"] == 50.0
+    assert data["trial_lesson_comment"] == "First lesson free"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # PATCH /admin/organizations/{organization_id}
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -476,6 +574,24 @@ def test_admin_org_patch_org_users_unchanged_by_patch(client, db):
     assert len(data["users"]) == 1
     assert data["users"][0]["id"] == owner.id
     assert data["users"][0]["role"] == "owner"
+
+
+def test_admin_org_patch_trial_lesson_available_true_to_false(client, db):
+    admin = _make_user(db, "pa_trl@x.com", is_system_admin=True)
+    org = _make_org(db, name="TrialToggleOrg")
+    org.trial_lesson_available = True
+    org.trial_lesson_price = 99.0
+    org.trial_lesson_comment = "Free first lesson"
+    db.commit()
+
+    resp = client.patch(f"/admin/organizations/{org.id}",
+                        json={"trial_lesson_available": False},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["trial_lesson_available"] is False
+    db.refresh(org)
+    assert org.trial_lesson_available is False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
