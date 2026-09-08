@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, model_validator
 from typing import List, Optional
 from decimal import Decimal
 from datetime import datetime
@@ -125,3 +125,75 @@ class OrganizationUpdate(BaseModel):
         if len(set(v)) != len(v):
             raise ValueError("Duplicate category IDs are not allowed")
         return v
+
+
+# ── Admin-only schemas ────────────────────────────────────────────────────────
+
+class AdminOrganizationCreate(BaseModel):
+    """Used by system admins to create an organization directly.
+
+    Differs from OrganizationCreate:
+    - category_ids optional (org can be created without categories)
+    - status / verified settable on creation (not forced to pending/false)
+    - owner_id optional: if supplied, that user becomes the org owner
+    """
+    name: str
+    description: Optional[str] = None
+    logo_url: Optional[str] = None
+    banner_url: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    website: Optional[str] = None
+    instagram_url: Optional[str] = None
+    facebook_url: Optional[str] = None
+    telegram_url: Optional[str] = None
+    youtube_url: Optional[str] = None
+    tiktok_url: Optional[str] = None
+    whatsapp_url: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    city_id: Optional[int] = None
+    trial_lesson_available: bool = False
+    trial_lesson_price: Optional[float] = None
+    trial_lesson_comment: Optional[str] = None
+    status: str = "pending"
+    verified: bool = False
+    category_ids: Optional[List[int]] = None
+    owner_id: Optional[int] = None
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        if v not in ALLOWED_STATUSES:
+            raise ValueError(f"status must be one of: {', '.join(sorted(ALLOWED_STATUSES))}")
+        return v
+
+    @field_validator("category_ids")
+    @classmethod
+    def validate_category_ids(cls, v: Optional[List[int]]) -> Optional[List[int]]:
+        if v is None:
+            return v
+        if len(v) < 1:
+            raise ValueError("At least one category is required when provided")
+        if len(v) > 10:
+            raise ValueError("At most 10 categories are allowed")
+        if len(set(v)) != len(v):
+            raise ValueError("Duplicate category IDs are not allowed")
+        return v
+
+
+class AdminOrganizationUpdate(OrganizationUpdate):
+    """Extends OrganizationUpdate with admin-only fields.
+
+    Adds:
+    - verified: org owners cannot set this; only system admins can
+    Protects:
+    - name cannot be explicitly nulled (Organization.name is NOT NULL)
+    """
+    verified: Optional[bool] = None
+
+    @model_validator(mode='after')
+    def name_not_null(self):
+        if self.name is None and "name" in self.model_fields_set:
+            raise ValueError("name cannot be null")
+        return self

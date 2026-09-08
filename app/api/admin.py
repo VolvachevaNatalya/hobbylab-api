@@ -5,17 +5,30 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.api.organizations import (
+    _category_map,
+    _city_fields,
+    _city_map,
+    _validate_category_ids,
+    _validate_city_id,
+)
 from app.core.auth import require_system_admin
 from app.db.dependencies import get_db
 from app.models.category import Category
+from app.models.city import City
 from app.models.classes import Class
 from app.models.event import Event
 from app.models.event_category import EventCategory
+from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.organization_category import OrganizationCategory
 from app.models.organization_user import OrganizationUser
+from app.models.payment import Payment
+from app.models.promotion import Promotion
+from app.models.subscription import Subscription
 from app.models.user import User
 from app.schemas.category import AdminCategoryUpdate, CategoryCreate
+from app.schemas.organization import AdminOrganizationCreate, AdminOrganizationUpdate
 from app.services.geocoding import geocode
 
 router = APIRouter(
@@ -126,6 +139,172 @@ def admin_list_organizations(
         "limit":  limit,
         "offset": offset,
     }
+
+
+def _admin_org_dict(org: Organization, db: Session) -> dict:
+    """Full organization representation for admin POST/PATCH responses."""
+    users = (
+        db.query(
+            OrganizationUser.role,
+            User.id.label("user_id"),
+            User.name.label("user_name"),
+            User.email.label("user_email"),
+        )
+        .join(User, User.id == OrganizationUser.user_id)
+        .filter(OrganizationUser.organization_id == org.id)
+        .all()
+    )
+    cats = _category_map([org.id], db).get(org.id, [])
+    return {
+        "id":           org.id,
+        "name":         org.name,
+        "description":  org.description,
+        "logo_url":     org.logo_url,
+        "banner_url":   org.banner_url,
+        "email":        org.email,
+        "phone":        org.phone,
+        "website":      org.website,
+        "instagram_url":  org.instagram_url,
+        "facebook_url":   org.facebook_url,
+        "telegram_url":   org.telegram_url,
+        "youtube_url":    org.youtube_url,
+        "tiktok_url":     org.tiktok_url,
+        "whatsapp_url":   org.whatsapp_url,
+        "address":        org.address,
+        "city":           org.city,
+        "city_id":        org.city_id,
+        "latitude":       float(org.latitude) if org.latitude is not None else None,
+        "longitude":      float(org.longitude) if org.longitude is not None else None,
+        "trial_lesson_available": org.trial_lesson_available,
+        "trial_lesson_price":     float(org.trial_lesson_price) if org.trial_lesson_price is not None else None,
+        "trial_lesson_comment":   org.trial_lesson_comment,
+        "status":     org.status,
+        "verified":   org.verified,
+        "created_at": org.created_at,
+        "updated_at": org.updated_at,
+        "users": [
+            {"id": r.user_id, "name": r.user_name, "email": r.user_email, "role": r.role}
+            for r in users
+        ],
+        "categories": [c.model_dump() for c in cats],
+    }
+
+
+@router.post("/organizations")
+def admin_create_organization(
+    payload: AdminOrganizationCreate,
+    db: Session = Depends(get_db),
+):
+    data = payload.model_dump()
+    category_ids = data.pop("category_ids")
+    owner_id = data.pop("owner_id")
+
+    if owner_id is not None:
+        if not db.query(User).filter(User.id == owner_id).first():
+            raise HTTPException(status_code=400, detail=f"User id={owner_id} not found")
+
+    if category_ids is not None:
+        _validate_category_ids(category_ids, db)
+
+    city_name_en = _validate_city_id(data.get("city_id"), db)
+    geocode_city = data.get("city") or city_name_en
+    lat, lng = geocode(data.get("address"), geocode_city)
+    if lat is not None:
+        data["latitude"] = lat
+        data["longitude"] = lng
+
+    org = Organization(**data)
+    db.add(org)
+    db.flush()
+
+    if owner_id is not None:
+        db.add(OrganizationUser(
+            organization_id=org.id,
+            user_id=owner_id,
+            role="owner",
+        ))
+
+    if category_ids is not None:
+        for pos, cat_id in enumerate(category_ids):
+            db.add(OrganizationCategory(
+                organization_id=org.id,
+                category_id=cat_id,
+                position=pos,
+            ))
+
+    db.commit()
+    db.refresh(org)
+    return _admin_org_dict(org, db)
+
+
+@router.patch("/organizations/{organization_id}")
+def admin_update_organization(
+    organization_id: int,
+    payload: AdminOrganizationUpdate,
+    db: Session = Depends(get_db),
+):
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    category_ids = update_data.pop("category_ids", None)
+
+    if category_ids is not None:
+        _validate_category_ids(category_ids, db)
+        db.query(OrganizationCategory).filter(
+            OrganizationCategory.organization_id == organization_id
+        ).delete()
+        for pos, cat_id in enumerate(category_ids):
+            db.add(OrganizationCategory(
+                organization_id=organization_id,
+                category_id=cat_id,
+                position=pos,
+            ))
+
+    if "city_id" in update_data:
+        _validate_city_id(update_data["city_id"], db)
+
+    if "address" in update_data or "city" in update_data or "city_id" in update_data:
+        new_address = update_data.get("address", org.address)
+        new_city_id = update_data.get("city_id", org.city_id)
+        new_city = update_data.get("city", org.city)
+        if new_city is None and new_city_id is not None:
+            city_obj = db.query(City).filter(City.id == new_city_id).first()
+            new_city = city_obj.name_en if city_obj else None
+        lat, lng = geocode(new_address, new_city)
+        if lat is not None:
+            update_data["latitude"] = lat
+            update_data["longitude"] = lng
+
+    for key, value in update_data.items():
+        setattr(org, key, value)
+
+    db.commit()
+    db.refresh(org)
+    return _admin_org_dict(org, db)
+
+
+@router.delete("/organizations/{organization_id}")
+def admin_delete_organization(
+    organization_id: int,
+    db: Session = Depends(get_db),
+):
+    org = db.query(Organization).filter(Organization.id == organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    # Replicate the safe deletion sequence from the existing mobile endpoint
+    # (app/api/organizations.py::delete_organization). These four tables have
+    # no ON DELETE CASCADE and must be cleared before the org row is removed.
+    db.query(Payment).filter(Payment.organization_id == organization_id).delete()
+    db.query(Promotion).filter(Promotion.organization_id == organization_id).delete()
+    db.query(Subscription).filter(Subscription.organization_id == organization_id).delete()
+    db.query(Notification).filter(Notification.organization_id == organization_id).delete()
+
+    db.delete(org)
+    db.commit()
+    return {"message": "Organization deleted"}
 
 
 @router.get("/events")
