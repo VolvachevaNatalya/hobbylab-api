@@ -158,7 +158,7 @@ class AdminOrganizationCreate(BaseModel):
     trial_lesson_comment: Optional[str] = None
     status: str = "pending"
     verified: bool = False
-    category_ids: Optional[List[int]] = None
+    category_ids: List[int]
     owner_id: Optional[int] = None
 
     @field_validator("status")
@@ -170,11 +170,9 @@ class AdminOrganizationCreate(BaseModel):
 
     @field_validator("category_ids")
     @classmethod
-    def validate_category_ids(cls, v: Optional[List[int]]) -> Optional[List[int]]:
-        if v is None:
-            return v
+    def validate_category_ids(cls, v: List[int]) -> List[int]:
         if len(v) < 1:
-            raise ValueError("At least one category is required when provided")
+            raise ValueError("At least one category is required")
         if len(v) > 10:
             raise ValueError("At most 10 categories are allowed")
         if len(set(v)) != len(v):

@@ -79,8 +79,9 @@ def _auth(user_id):
 
 def test_admin_org_create_200_for_system_admin(client, db):
     admin = _make_user(db, "cr_adm@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "NewOrg"},
+                       json={"name": "NewOrg", "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
 
@@ -106,10 +107,29 @@ def test_admin_org_create_requires_name(client, db):
     assert resp.status_code == 422
 
 
+def test_admin_org_create_without_category_ids_returns_422(client, db):
+    """category_ids is required — omitting it returns 422 (matches mobile behavior)."""
+    admin = _make_user(db, "cr_nocat@x.com", is_system_admin=True)
+    resp = client.post("/admin/organizations",
+                       json={"name": "NoCatOrg"},
+                       headers=_auth(admin.id))
+    assert resp.status_code == 422
+
+
+def test_admin_org_create_empty_category_ids_returns_422(client, db):
+    """category_ids=[] is rejected — at least one category is required."""
+    admin = _make_user(db, "cr_emptycat@x.com", is_system_admin=True)
+    resp = client.post("/admin/organizations",
+                       json={"name": "EmptyCatOrg", "category_ids": []},
+                       headers=_auth(admin.id))
+    assert resp.status_code == 422
+
+
 def test_admin_org_create_response_fields(client, db):
     admin = _make_user(db, "cr_fld@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "FieldOrg"},
+                       json={"name": "FieldOrg", "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     data = resp.json()
@@ -120,8 +140,10 @@ def test_admin_org_create_response_fields(client, db):
 
 def test_admin_org_create_persists_to_db(client, db):
     admin = _make_user(db, "cr_db@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "PersistOrg", "email": "org@example.com"},
+                       json={"name": "PersistOrg", "email": "org@example.com",
+                             "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     org_id = resp.json()["id"]
@@ -133,16 +155,19 @@ def test_admin_org_create_persists_to_db(client, db):
 
 def test_admin_org_create_default_status_is_pending(client, db):
     admin = _make_user(db, "cr_st@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "PendingOrg"},
+                       json={"name": "PendingOrg", "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.json()["status"] == "pending"
 
 
 def test_admin_org_create_custom_status_active(client, db):
     admin = _make_user(db, "cr_act@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "ActiveOrg", "status": "active"},
+                       json={"name": "ActiveOrg", "status": "active",
+                             "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     assert resp.json()["status"] == "active"
@@ -158,16 +183,19 @@ def test_admin_org_create_invalid_status_returns_422(client, db):
 
 def test_admin_org_create_default_verified_false(client, db):
     admin = _make_user(db, "cr_vf@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "UnverifiedOrg"},
+                       json={"name": "UnverifiedOrg", "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.json()["verified"] is False
 
 
 def test_admin_org_create_verified_true(client, db):
     admin = _make_user(db, "cr_vt@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "VerifiedOrg", "verified": True},
+                       json={"name": "VerifiedOrg", "verified": True,
+                             "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     assert resp.json()["verified"] is True
@@ -176,8 +204,10 @@ def test_admin_org_create_verified_true(client, db):
 def test_admin_org_create_with_owner_creates_org_user(client, db):
     admin = _make_user(db, "cr_oadm@x.com", is_system_admin=True)
     owner = _make_user(db, "cr_own@x.com", name="The Owner")
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "OwnedOrg", "owner_id": owner.id},
+                       json={"name": "OwnedOrg", "owner_id": owner.id,
+                             "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     data = resp.json()
@@ -196,8 +226,9 @@ def test_admin_org_create_with_owner_creates_org_user(client, db):
 
 def test_admin_org_create_without_owner_no_org_user(client, db):
     admin = _make_user(db, "cr_noadm@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "OwnerlessOrg"},
+                       json={"name": "OwnerlessOrg", "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     data = resp.json()
@@ -210,8 +241,10 @@ def test_admin_org_create_without_owner_no_org_user(client, db):
 
 def test_admin_org_create_invalid_owner_id_returns_400(client, db):
     admin = _make_user(db, "cr_badow@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "BadOwnerOrg", "owner_id": 999999},
+                       json={"name": "BadOwnerOrg", "owner_id": 999999,
+                             "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 400
 
@@ -219,8 +252,9 @@ def test_admin_org_create_invalid_owner_id_returns_400(client, db):
 def test_admin_org_create_system_admin_never_assigned_as_owner(client, db):
     """System admin must never be silently added as org owner when owner_id is omitted."""
     admin = _make_user(db, "cr_noslnt@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "SilentOwnerGuardOrg"},
+                       json={"name": "SilentOwnerGuardOrg", "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     org_id = resp.json()["id"]
@@ -245,19 +279,12 @@ def test_admin_org_create_with_categories(client, db):
     assert data["categories"][0]["id"] == cat.id
 
 
-def test_admin_org_create_without_categories_returns_empty_list(client, db):
-    admin = _make_user(db, "cr_nocat@x.com", is_system_admin=True)
-    resp = client.post("/admin/organizations",
-                       json={"name": "NoCatOrg"},
-                       headers=_auth(admin.id))
-    assert resp.status_code == 200
-    assert resp.json()["categories"] == []
-
-
 def test_admin_org_create_id_not_supplied_by_client(client, db):
     admin = _make_user(db, "cr_noid@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "NoIdOrg", "id": 99999},
+                       json={"name": "NoIdOrg", "id": 99999,
+                             "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     assert resp.json()["id"] != 99999
@@ -265,6 +292,7 @@ def test_admin_org_create_id_not_supplied_by_client(client, db):
 
 def test_admin_org_create_contact_fields_preserved(client, db):
     admin = _make_user(db, "cr_cont@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
                        json={
                            "name": "ContactOrg",
@@ -272,6 +300,7 @@ def test_admin_org_create_contact_fields_preserved(client, db):
                            "phone": "+972501234567",
                            "website": "https://org.com",
                            "instagram_url": "https://instagram.com/org",
+                           "category_ids": [cat.id],
                        },
                        headers=_auth(admin.id))
     assert resp.status_code == 200
@@ -284,8 +313,10 @@ def test_admin_org_create_contact_fields_preserved(client, db):
 
 def test_admin_org_create_valid_email_accepted(client, db):
     admin = _make_user(db, "cr_em_ok@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "EmailOrg", "email": "valid@example.com"},
+                       json={"name": "EmailOrg", "email": "valid@example.com",
+                             "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     assert resp.json()["email"] == "valid@example.com"
@@ -296,8 +327,10 @@ def test_admin_org_create_malformed_email_accepted(client, db):
     # validation. Admin must match that behavior; malformed values are stored
     # as-is (format enforcement is a future product decision).
     admin = _make_user(db, "cr_em_bad@x.com", is_system_admin=True)
+    cat = _make_category(db, "Cat")
     resp = client.post("/admin/organizations",
-                       json={"name": "MalformedEmailOrg", "email": "not-an-email"},
+                       json={"name": "MalformedEmailOrg", "email": "not-an-email",
+                             "category_ids": [cat.id]},
                        headers=_auth(admin.id))
     assert resp.status_code == 200
     assert resp.json()["email"] == "not-an-email"
