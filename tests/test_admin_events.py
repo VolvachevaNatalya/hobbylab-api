@@ -1,10 +1,12 @@
-"""Tests for GET /admin/events."""
-from datetime import datetime
+"""Tests for admin event endpoints (list, create, detail, update, delete)."""
+from datetime import datetime, timedelta
 
 from app.core.security import create_access_token
 from app.models.category import Category
 from app.models.event import Event
 from app.models.event_category import EventCategory
+from app.models.event_series import EventSeries
+from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
 from app.models.user import User
@@ -263,3 +265,639 @@ def test_admin_events_newest_first(client, db):
     pos = {eid: ids.index(eid) for eid in [e1.id, e2.id, e3.id]}
     # e3 created last → appears first
     assert pos[e3.id] < pos[e2.id] < pos[e1.id]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POST /admin/events
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_START = "2099-06-01T10:00:00"
+
+
+def _event_body(org_id, cat_ids, **kwargs):
+    body = {
+        "organization_id": org_id,
+        "title": "Test Event",
+        "start_datetime": _START,
+        "category_ids": cat_ids,
+    }
+    body.update(kwargs)
+    return body
+
+
+def _make_series(db, org_id, cat_id, count=4):
+    """Create an EventSeries with `count` weekly occurrences directly in DB."""
+    series = EventSeries(frequency="weekly", interval=1, end_type="count", total_count=count)
+    db.add(series)
+    db.flush()
+    events = []
+    for i in range(count):
+        dt = datetime(2099, 6, 1, 10, 0, 0) + timedelta(weeks=i)
+        e = Event(
+            organization_id=org_id,
+            category_id=cat_id,
+            title=f"Recur {i}",
+            start_datetime=dt,
+            series_id=series.id,
+            occurrence_index=i,
+            original_start_datetime=dt,
+        )
+        db.add(e)
+        db.flush()
+        db.add(EventCategory(event_id=e.id, category_id=cat_id, position=0))
+        events.append(e)
+    series.generated_until = events[-1].start_datetime
+    db.commit()
+    for e in events:
+        db.refresh(e)
+    db.refresh(series)
+    return series, events
+
+
+# ── POST auth ─────────────────────────────────────────────────────────────────
+
+def test_admin_create_event_401_unauthenticated(client, db):
+    org = _make_org(db)
+    cat = _make_category(db)
+    resp = client.post("/admin/events", json=_event_body(org.id, [cat.id]))
+    assert resp.status_code == 401
+
+
+def test_admin_create_event_403_normal_user(client, db):
+    user = _make_user(db, "ce_user@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    resp = client.post("/admin/events", json=_event_body(org.id, [cat.id]),
+                       headers=_auth(user.id))
+    assert resp.status_code == 403
+
+
+def test_admin_create_event_200_system_admin(client, db):
+    admin = _make_user(db, "ce_adm@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    resp = client.post("/admin/events", json=_event_body(org.id, [cat.id]),
+                       headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+
+# ── POST create – single event ────────────────────────────────────────────────
+
+def test_admin_create_event_single_returns_full_response(client, db):
+    admin = _make_user(db, "ce_single@x.com", is_system_admin=True)
+    org = _make_org(db, "SingleOrg")
+    cat = _make_category(db, "Dance")
+    body = _event_body(org.id, [cat.id], description="Desc", price=50.0)
+    resp = client.post("/admin/events", json=body, headers=_auth(admin.id))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["title"] == "Test Event"
+    assert data["organization_id"] == org.id
+    assert data["organization_name"] == "SingleOrg"
+    assert data["series_id"] is None
+    assert len(data["categories"]) == 1
+    assert data["categories"][0]["name"] == "Dance"
+    assert data["price"] == 50.0
+
+
+def test_admin_create_event_no_org_membership_required(client, db):
+    """System admin can create an event without being a member of the org."""
+    admin = _make_user(db, "ce_nomem@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    # Verify admin is NOT a member
+    assert db.query(OrganizationUser).filter(
+        OrganizationUser.organization_id == org.id,
+        OrganizationUser.user_id == admin.id,
+    ).first() is None
+    resp = client.post("/admin/events", json=_event_body(org.id, [cat.id]),
+                       headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+
+def test_admin_create_event_nonexistent_org_returns_404(client, db):
+    admin = _make_user(db, "ce_noorg@x.com", is_system_admin=True)
+    cat = _make_category(db)
+    resp = client.post("/admin/events",
+                       json=_event_body(999999, [cat.id]),
+                       headers=_auth(admin.id))
+    assert resp.status_code == 404
+
+
+def test_admin_create_event_missing_org_id_returns_422(client, db):
+    admin = _make_user(db, "ce_noid@x.com", is_system_admin=True)
+    cat = _make_category(db)
+    resp = client.post("/admin/events",
+                       json={"title": "No Org", "start_datetime": _START, "category_ids": [cat.id]},
+                       headers=_auth(admin.id))
+    assert resp.status_code == 422
+
+
+def test_admin_create_event_missing_categories_returns_422(client, db):
+    admin = _make_user(db, "ce_nocat@x.com", is_system_admin=True)
+    org = _make_org(db)
+    resp = client.post("/admin/events",
+                       json={"organization_id": org.id, "title": "NoCat", "start_datetime": _START},
+                       headers=_auth(admin.id))
+    assert resp.status_code == 422
+
+
+def test_admin_create_event_empty_categories_returns_422(client, db):
+    admin = _make_user(db, "ce_emcat@x.com", is_system_admin=True)
+    org = _make_org(db)
+    resp = client.post("/admin/events",
+                       json=_event_body(org.id, []),
+                       headers=_auth(admin.id))
+    assert resp.status_code == 422
+
+
+def test_admin_create_event_nonexistent_category_returns_400(client, db):
+    admin = _make_user(db, "ce_badcat@x.com", is_system_admin=True)
+    org = _make_org(db)
+    resp = client.post("/admin/events",
+                       json=_event_body(org.id, [999999]),
+                       headers=_auth(admin.id))
+    assert resp.status_code == 400
+
+
+def test_admin_create_event_multiple_categories(client, db):
+    admin = _make_user(db, "ce_mcat@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat1 = _make_category(db, "Dance")
+    cat2 = _make_category(db, "Music")
+    resp = client.post("/admin/events",
+                       json=_event_body(org.id, [cat1.id, cat2.id]),
+                       headers=_auth(admin.id))
+    assert resp.status_code == 200
+    names = {c["name"] for c in resp.json()["categories"]}
+    assert names == {"Dance", "Music"}
+
+
+def test_admin_create_event_no_notifications_sent(client, db):
+    admin = _make_user(db, "ce_notif@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    client.post("/admin/events", json=_event_body(org.id, [cat.id]),
+                headers=_auth(admin.id))
+    assert db.query(Notification).count() == 0
+
+
+# ── POST create – recurring event ─────────────────────────────────────────────
+
+_RECURRENCE = {"frequency": "weekly", "interval": 1, "end_type": "count", "total_count": 4}
+
+
+def test_admin_create_event_recurring_success(client, db):
+    admin = _make_user(db, "ce_rec@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    body = _event_body(org.id, [cat.id], recurrence=_RECURRENCE)
+    resp = client.post("/admin/events", json=body, headers=_auth(admin.id))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["series_id"] is not None
+    assert data["occurrence_index"] == 0
+    assert data["recurrence"]["frequency"] == "weekly"
+    assert data["recurrence"]["total_count"] == 4
+
+
+def test_admin_create_event_recurring_creates_series_and_occurrences(client, db):
+    admin = _make_user(db, "ce_recdb@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    body = _event_body(org.id, [cat.id], recurrence=_RECURRENCE)
+    resp = client.post("/admin/events", json=body, headers=_auth(admin.id))
+    series_id = resp.json()["series_id"]
+
+    series = db.query(EventSeries).filter(EventSeries.id == series_id).first()
+    assert series is not None
+    assert series.frequency == "weekly"
+    assert series.total_count == 4
+
+    occurrences = db.query(Event).filter(Event.series_id == series_id).all()
+    assert len(occurrences) == 4
+    indices = sorted(e.occurrence_index for e in occurrences)
+    assert indices == [0, 1, 2, 3]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GET /admin/events/{event_id}
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_EXPECTED_DETAIL_FIELDS = {
+    "id", "title", "description", "address", "city", "city_id",
+    "latitude", "longitude", "image_url", "banner_url",
+    "start_datetime", "end_datetime", "min_age", "max_age", "age_groups",
+    "capacity", "price", "price_comment", "status", "is_nationwide",
+    "organization_id", "organization_name", "categories",
+    "series_id", "occurrence_index", "original_start_datetime", "created_at",
+    # EventResponse also includes these; acceptable to have them in detail
+    "category_id", "recurrence", "is_past", "distance_km",
+    "city_name_he", "city_name_en", "city_name_ru",
+    "category_name",
+}
+
+
+def test_admin_get_event_401_unauthenticated(client, db):
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.get(f"/admin/events/{event.id}")
+    assert resp.status_code == 401
+
+
+def test_admin_get_event_403_normal_user(client, db):
+    user = _make_user(db, "ge_user@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.get(f"/admin/events/{event.id}", headers=_auth(user.id))
+    assert resp.status_code == 403
+
+
+def test_admin_get_event_200_system_admin(client, db):
+    admin = _make_user(db, "ge_adm@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.get(f"/admin/events/{event.id}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+
+def test_admin_get_event_full_fields_returned(client, db):
+    admin = _make_user(db, "ge_fld@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.get(f"/admin/events/{event.id}", headers=_auth(admin.id))
+    data = resp.json()
+    required = {
+        "id", "title", "description", "address", "city", "city_id",
+        "latitude", "longitude", "image_url", "banner_url",
+        "start_datetime", "end_datetime", "min_age", "max_age",
+        "capacity", "price", "price_comment", "status", "is_nationwide",
+        "organization_id", "organization_name", "categories",
+        "series_id", "occurrence_index", "original_start_datetime", "created_at",
+    }
+    assert required.issubset(set(data.keys()))
+
+
+def test_admin_get_event_categories_returned(client, db):
+    admin = _make_user(db, "ge_cat@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat1 = _make_category(db, "Dance")
+    cat2 = _make_category(db, "Music")
+    event = _make_event(db, org.id, cat_id=cat1.id)
+    _link_category(db, event.id, cat2.id, position=1)
+    resp = client.get(f"/admin/events/{event.id}", headers=_auth(admin.id))
+    names = {c["name"] for c in resp.json()["categories"]}
+    assert names == {"Dance", "Music"}
+
+
+def test_admin_get_event_organization_name_returned(client, db):
+    admin = _make_user(db, "ge_org@x.com", is_system_admin=True)
+    org = _make_org(db, "DetailOrg")
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.get(f"/admin/events/{event.id}", headers=_auth(admin.id))
+    assert resp.json()["organization_name"] == "DetailOrg"
+
+
+def test_admin_get_event_recurrence_returned_for_series_event(client, db):
+    admin = _make_user(db, "ge_rec@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    _, events = _make_series(db, org.id, cat.id)
+    resp = client.get(f"/admin/events/{events[0].id}", headers=_auth(admin.id))
+    data = resp.json()
+    assert data["series_id"] is not None
+    assert data["recurrence"] is not None
+    assert data["recurrence"]["frequency"] == "weekly"
+    assert data["recurrence"]["total_count"] == 4
+
+
+def test_admin_get_event_404_missing(client, db):
+    admin = _make_user(db, "ge_404@x.com", is_system_admin=True)
+    resp = client.get("/admin/events/999999", headers=_auth(admin.id))
+    assert resp.status_code == 404
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PATCH /admin/events/{event_id}
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_admin_patch_event_401_unauthenticated(client, db):
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.patch(f"/admin/events/{event.id}", json={"title": "X"})
+    assert resp.status_code == 401
+
+
+def test_admin_patch_event_403_normal_user(client, db):
+    user = _make_user(db, "pe_user@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.patch(f"/admin/events/{event.id}", json={"title": "X"},
+                        headers=_auth(user.id))
+    assert resp.status_code == 403
+
+
+def test_admin_patch_event_200_system_admin(client, db):
+    admin = _make_user(db, "pe_adm@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.patch(f"/admin/events/{event.id}", json={"title": "Updated"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+
+def test_admin_patch_event_single_normal(client, db):
+    admin = _make_user(db, "pe_single@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, title="Original", cat_id=cat.id)
+    resp = client.patch(f"/admin/events/{event.id}", json={"title": "Patched"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "Patched"
+    db.refresh(event)
+    assert event.title == "Patched"
+
+
+def test_admin_patch_event_partial_preserves_other_fields(client, db):
+    admin = _make_user(db, "pe_partial@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, title="Keep", cat_id=cat.id)
+    # Only patch description; title must not change
+    resp = client.patch(f"/admin/events/{event.id}", json={"description": "New desc"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["title"] == "Keep"
+    assert data["description"] == "New desc"
+
+
+def test_admin_patch_event_organization_id_not_changeable(client, db):
+    """organization_id is not in EventUpdate; sending it is silently ignored."""
+    admin = _make_user(db, "pe_orgid@x.com", is_system_admin=True)
+    org1 = _make_org(db, "Org1")
+    org2 = _make_org(db, "Org2")
+    cat = _make_category(db)
+    event = _make_event(db, org1.id, cat_id=cat.id)
+    resp = client.patch(f"/admin/events/{event.id}",
+                        json={"title": "Moved?", "organization_id": org2.id},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+    db.refresh(event)
+    assert event.organization_id == org1.id
+
+
+def test_admin_patch_event_categories_replace(client, db):
+    admin = _make_user(db, "pe_cat@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat1 = _make_category(db, "Dance")
+    cat2 = _make_category(db, "Music")
+    event = _make_event(db, org.id, cat_id=cat1.id)
+    resp = client.patch(f"/admin/events/{event.id}", json={"category_ids": [cat2.id]},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+    names = {c["name"] for c in resp.json()["categories"]}
+    assert names == {"Music"}
+
+
+def test_admin_patch_event_empty_categories_returns_422(client, db):
+    admin = _make_user(db, "pe_emcat@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.patch(f"/admin/events/{event.id}", json={"category_ids": []},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 422
+
+
+def test_admin_patch_event_recurring_scope_single(client, db):
+    """scope=single updates only this occurrence's fields; series_id remains intact.
+
+    Detachment from the series only happens when recurrence=null is sent explicitly
+    (the remove_recurrence path). scope=single without that is a field-only update.
+    """
+    admin = _make_user(db, "pe_recs@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, events = _make_series(db, org.id, cat.id, count=3)
+    original_series_id = series.id
+
+    target = events[1]
+    resp = client.patch(f"/admin/events/{target.id}",
+                        params={"scope": "single"},
+                        json={"title": "Updated Single"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["title"] == "Updated Single"
+    # series_id stays intact — scope=single only updates fields
+    assert data["series_id"] == original_series_id
+    # Other occurrences are unchanged
+    db.expire_all()
+    e0 = db.query(Event).filter(Event.id == events[0].id).first()
+    assert e0.title != "Updated Single"
+
+
+def test_admin_patch_event_recurring_scope_future(client, db):
+    """scope=future updates this and later occurrences into a new series."""
+    admin = _make_user(db, "pe_recf@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    _, events = _make_series(db, org.id, cat.id, count=4)
+
+    target = events[2]  # occurrence_index=2
+    resp = client.patch(f"/admin/events/{target.id}",
+                        params={"scope": "future"},
+                        json={"title": "Future Title"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+    # Events 0,1 keep old series; events 2,3 get new series
+    db.expire_all()
+    e0 = db.query(Event).filter(Event.id == events[0].id).first()
+    e2 = db.query(Event).filter(Event.id == target.id).first()
+    assert e0.series_id != e2.series_id
+
+
+def test_admin_patch_event_recurring_scope_series(client, db):
+    """scope=series updates all occurrences in the series."""
+    admin = _make_user(db, "pe_recser@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, events = _make_series(db, org.id, cat.id, count=3)
+
+    resp = client.patch(f"/admin/events/{events[0].id}",
+                        params={"scope": "series"},
+                        json={"title": "All Updated"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+    db.expire_all()
+    for e in events:
+        updated = db.query(Event).filter(Event.id == e.id).first()
+        assert updated.title == "All Updated"
+
+
+def test_admin_patch_event_no_notifications_sent(client, db):
+    admin = _make_user(db, "pe_notif@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    client.patch(f"/admin/events/{event.id}", json={"title": "Changed"},
+                 headers=_auth(admin.id))
+    assert db.query(Notification).count() == 0
+
+
+def test_admin_patch_event_404_missing(client, db):
+    admin = _make_user(db, "pe_404@x.com", is_system_admin=True)
+    resp = client.patch("/admin/events/999999", json={"title": "X"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 404
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DELETE /admin/events/{event_id}
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_admin_delete_event_401_unauthenticated(client, db):
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.delete(f"/admin/events/{event.id}")
+    assert resp.status_code == 401
+
+
+def test_admin_delete_event_403_normal_user(client, db):
+    user = _make_user(db, "de_user@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.delete(f"/admin/events/{event.id}", headers=_auth(user.id))
+    assert resp.status_code == 403
+
+
+def test_admin_delete_event_200_system_admin(client, db):
+    admin = _make_user(db, "de_adm@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    resp = client.delete(f"/admin/events/{event.id}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+
+def test_admin_delete_event_single_removes_event(client, db):
+    admin = _make_user(db, "de_single@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    eid = event.id
+    resp = client.delete(f"/admin/events/{eid}", headers=_auth(admin.id))
+    assert resp.status_code == 200
+    assert db.query(Event).filter(Event.id == eid).first() is None
+
+
+def test_admin_delete_event_does_not_delete_org_or_user(client, db):
+    admin = _make_user(db, "de_safeou@x.com", is_system_admin=True)
+    org = _make_org(db)
+    user = _make_user(db, "de_orguser@x.com")
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    client.delete(f"/admin/events/{event.id}", headers=_auth(admin.id))
+    assert db.query(Organization).filter(Organization.id == org.id).first() is not None
+    assert db.query(User).filter(User.id == user.id).first() is not None
+
+
+def test_admin_delete_event_no_notifications_sent(client, db):
+    admin = _make_user(db, "de_notif@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    client.delete(f"/admin/events/{event.id}", headers=_auth(admin.id))
+    assert db.query(Notification).count() == 0
+
+
+def test_admin_delete_event_404_missing(client, db):
+    admin = _make_user(db, "de_404@x.com", is_system_admin=True)
+    resp = client.delete("/admin/events/999999", headers=_auth(admin.id))
+    assert resp.status_code == 404
+
+
+def test_admin_delete_event_recurring_scope_single(client, db):
+    """scope=single on a series event deletes only that occurrence."""
+    admin = _make_user(db, "de_recs@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, events = _make_series(db, org.id, cat.id, count=4)
+
+    target_id = events[1].id
+    resp = client.delete(f"/admin/events/{target_id}",
+                         params={"scope": "single"},
+                         headers=_auth(admin.id))
+    assert resp.status_code == 200
+    assert db.query(Event).filter(Event.id == target_id).first() is None
+    # Other 3 occurrences remain
+    remaining = db.query(Event).filter(Event.series_id == series.id).count()
+    assert remaining == 3
+    # Series row still exists
+    assert db.query(EventSeries).filter(EventSeries.id == series.id).first() is not None
+
+
+def test_admin_delete_event_recurring_scope_future(client, db):
+    """scope=future deletes from the selected occurrence onward."""
+    admin = _make_user(db, "de_recf@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, events = _make_series(db, org.id, cat.id, count=4)
+
+    # Delete from index 2 onward (events[2] and events[3])
+    resp = client.delete(f"/admin/events/{events[2].id}",
+                         params={"scope": "future"},
+                         headers=_auth(admin.id))
+    assert resp.status_code == 200
+    remaining_ids = {r.id for r in db.query(Event).filter(Event.series_id == series.id).all()}
+    assert events[0].id in remaining_ids
+    assert events[1].id in remaining_ids
+    assert events[2].id not in remaining_ids
+    assert events[3].id not in remaining_ids
+
+
+def test_admin_delete_event_recurring_scope_series(client, db):
+    """scope=series deletes all occurrences and the EventSeries row."""
+    admin = _make_user(db, "de_recser@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, events = _make_series(db, org.id, cat.id, count=3)
+    sid = series.id
+    event_ids = [e.id for e in events]
+
+    resp = client.delete(f"/admin/events/{events[0].id}",
+                         params={"scope": "series"},
+                         headers=_auth(admin.id))
+    assert resp.status_code == 200
+    for eid in event_ids:
+        assert db.query(Event).filter(Event.id == eid).first() is None
+    assert db.query(EventSeries).filter(EventSeries.id == sid).first() is None
+
+
+def test_admin_delete_event_scope_future_all_gone_deletes_series(client, db):
+    """scope=future from index 0 removes all occurrences; series row is cleaned up."""
+    admin = _make_user(db, "de_futall@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, events = _make_series(db, org.id, cat.id, count=2)
+    sid = series.id
+
+    resp = client.delete(f"/admin/events/{events[0].id}",
+                         params={"scope": "future"},
+                         headers=_auth(admin.id))
+    assert resp.status_code == 200
+    assert db.query(EventSeries).filter(EventSeries.id == sid).first() is None

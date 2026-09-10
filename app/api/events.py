@@ -886,6 +886,143 @@ def _update_series(
     return _enrich(refreshed, db)
 
 
+# ── Shared create / update / delete helpers (callable by admin and mobile) ─────
+
+def _do_create_event(
+    event_data: dict,
+    category_ids: List[int],
+    recurrence: Optional[RecurrenceCreate],
+    db: Session,
+) -> Event:
+    """Insert a single or recurring event without auth checks or notifications.
+
+    event_data must already have category_ids and recurrence popped, and
+    age_groups JSON-serialised if applicable. Returns the first Event row.
+    """
+    _validate_category_ids(category_ids, db)
+    city_name_en = _validate_city_id(event_data.get("city_id"), db)
+
+    event_data["category_id"] = category_ids[0]
+
+    geocode_city = event_data.get("city") or city_name_en
+    lat, lng = geocode(event_data.get("address"), geocode_city)
+    if lat is not None:
+        event_data["latitude"] = lat
+        event_data["longitude"] = lng
+
+    if recurrence is None:
+        new_event = Event(**event_data)
+        db.add(new_event)
+        db.flush()
+        for pos, cat_id in enumerate(category_ids):
+            db.add(EventCategory(event_id=new_event.id, category_id=cat_id, position=pos))
+        db.commit()
+        db.refresh(new_event)
+    else:
+        series = EventSeries(
+            frequency=recurrence.frequency,
+            interval=recurrence.interval,
+            end_type=recurrence.end_type,
+            total_count=recurrence.total_count,
+            end_date=recurrence.end_date,
+        )
+        db.add(series)
+        db.flush()
+
+        first_start = event_data.pop("start_datetime")
+        end_datetime = event_data.pop("end_datetime", None)
+        duration = (end_datetime - first_start) if end_datetime and first_start else None
+
+        shared = {k: v for k, v in event_data.items()
+                  if k not in ("category_id", "series_id", "occurrence_index", "original_start_datetime")}
+
+        dates = generate_dates(recurrence, first_start)
+        new_events = _create_occurrences(db, dates, shared, category_ids, series.id, duration)
+
+        series.generated_until = dates[-1]
+        db.commit()
+        new_event = new_events[0]
+        db.refresh(new_event)
+
+    return new_event
+
+
+def _do_update_event(
+    event: Event,
+    update_data: dict,
+    category_ids: Optional[List[int]],
+    recurrence: Optional[RecurrenceCreate],
+    remove_recurrence: bool,
+    scope: str,
+    db: Session,
+) -> EventResponse:
+    """Dispatch to the right scope handler. No auth checks or notifications."""
+    # Explicit recurrence removal (scope irrelevant): keep only this occurrence,
+    # delete all siblings, delete the series row.
+    if remove_recurrence and event.series_id is not None:
+        original_series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
+        return _remove_series_keep_one(event, original_series, update_data, category_ids, db)
+    # Adding recurrence to a standalone event (scope irrelevant): convert to series in-place.
+    if recurrence is not None and event.series_id is None:
+        return _convert_standalone_to_series(event, update_data, category_ids, recurrence, db)
+    if scope == "single":
+        return _update_single(event, update_data, category_ids, recurrence, remove_recurrence, db)
+    if scope == "future":
+        return _update_future(event, update_data, category_ids, recurrence, remove_recurrence, db)
+    return _update_series(event, update_data, category_ids, recurrence, remove_recurrence, db)
+
+
+def _do_delete_event(event: Event, scope: str, db: Session) -> dict:
+    """Delete event(s) by scope. No auth checks. Returns a status dict."""
+    if scope == "single":
+        _delete_event_rows([event.id], db)
+        db.commit()
+        return {"message": "Event deleted"}
+
+    if scope == "future":
+        if event.series_id is None:
+            _delete_event_rows([event.id], db)
+            db.commit()
+            return {"message": "Event deleted"}
+
+        series_id = event.series_id
+        from_index = event.occurrence_index
+
+        future_ids = [
+            r.id for r in db.query(Event.id).filter(
+                Event.series_id == series_id,
+                Event.occurrence_index >= from_index,
+            ).all()
+        ]
+        _delete_event_rows(future_ids, db)
+
+        remaining = db.query(func.count(Event.id)).filter(Event.series_id == series_id).scalar()
+        if remaining == 0:
+            db.query(EventSeries).filter(EventSeries.id == series_id).delete()
+        else:
+            series = db.query(EventSeries).filter(EventSeries.id == series_id).first()
+            if series:
+                max_start = db.query(func.max(Event.start_datetime)).filter(
+                    Event.series_id == series_id
+                ).scalar()
+                series.generated_until = max_start
+        db.commit()
+        return {"message": "Future occurrences deleted"}
+
+    # scope == "series"
+    if event.series_id is None:
+        _delete_event_rows([event.id], db)
+        db.commit()
+        return {"message": "Event deleted"}
+
+    series_id = event.series_id
+    all_ids = [r.id for r in db.query(Event.id).filter(Event.series_id == series_id).all()]
+    _delete_event_rows(all_ids, db)
+    db.query(EventSeries).filter(EventSeries.id == series_id).delete()
+    db.commit()
+    return {"message": "Series deleted"}
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=List[EventResponse])
@@ -1015,51 +1152,7 @@ def create_event(
     if isinstance(event_data.get("age_groups"), list):
         event_data["age_groups"] = json.dumps(event_data["age_groups"])
 
-    _validate_category_ids(category_ids, db)
-    city_name_en = _validate_city_id(event_data.get("city_id"), db)
-
-    event_data["category_id"] = category_ids[0]
-
-    geocode_city = event_data.get("city") or city_name_en
-    lat, lng = geocode(event_data.get("address"), geocode_city)
-    if lat is not None:
-        event_data["latitude"] = lat
-        event_data["longitude"] = lng
-
-    if recurrence is None:
-        new_event = Event(**event_data)
-        db.add(new_event)
-        db.flush()
-        for pos, cat_id in enumerate(category_ids):
-            db.add(EventCategory(event_id=new_event.id, category_id=cat_id, position=pos))
-        db.commit()
-        db.refresh(new_event)
-    else:
-        # Recurring series
-        series = EventSeries(
-            frequency=recurrence.frequency,
-            interval=recurrence.interval,
-            end_type=recurrence.end_type,
-            total_count=recurrence.total_count,
-            end_date=recurrence.end_date,
-        )
-        db.add(series)
-        db.flush()
-
-        first_start = event_data.pop("start_datetime")
-        end_datetime = event_data.pop("end_datetime", None)
-        duration = (end_datetime - first_start) if end_datetime and first_start else None
-
-        shared = {k: v for k, v in event_data.items()
-                   if k not in ("category_id", "series_id", "occurrence_index", "original_start_datetime")}
-
-        dates = generate_dates(recurrence, first_start)
-        new_events = _create_occurrences(db, dates, shared, category_ids, series.id, duration)
-
-        series.generated_until = dates[-1]
-        db.commit()
-        new_event = new_events[0]
-        db.refresh(new_event)
+    new_event = _do_create_event(event_data, category_ids, recurrence, db)
 
     org = db.query(Organization).filter(Organization.id == new_event.organization_id).first()
     if org:
@@ -1116,21 +1209,7 @@ def update_event(
     is_cancellation = update_data.get("status") == "cancelled" and original_status != "cancelled"
     needs_update_notify = not is_cancellation and has_meaningful_change(event, update_data)
 
-    # Removing recurrence: keep only this occurrence, delete all siblings, delete series.
-    # Scope is irrelevant for this operation.
-    if remove_recurrence and event.series_id is not None:
-        original_series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
-        result = _remove_series_keep_one(event, original_series, update_data, category_ids, db)
-    # Adding recurrence to a standalone event: convert it to a series in-place.
-    # Scope is irrelevant — the existing event always becomes occurrence 0.
-    elif recurrence is not None and event.series_id is None:
-        result = _convert_standalone_to_series(event, update_data, category_ids, recurrence, db)
-    elif scope == "single":
-        result = _update_single(event, update_data, category_ids, recurrence, remove_recurrence, db)
-    elif scope == "future":
-        result = _update_future(event, update_data, category_ids, recurrence, remove_recurrence, db)
-    else:
-        result = _update_series(event, update_data, category_ids, recurrence, remove_recurrence, db)
+    result = _do_update_event(event, update_data, category_ids, recurrence, remove_recurrence, scope, db)
 
     if is_cancellation:
         notify_event_cancelled(original_id, original_title, current_user.id, db)
@@ -1163,53 +1242,4 @@ def delete_event(
     if not org_user:
         raise HTTPException(status_code=403, detail="No permission")
 
-    if scope == "single":
-        db.query(Promotion).filter(Promotion.event_id == event_id).delete()
-        db.delete(event)
-        db.commit()
-        return {"message": "Event deleted"}
-
-    if scope == "future":
-        if event.series_id is None:
-            db.query(Promotion).filter(Promotion.event_id == event_id).delete()
-            db.delete(event)
-            db.commit()
-            return {"message": "Event deleted"}
-
-        series_id = event.series_id
-        from_index = event.occurrence_index
-
-        future_ids = [
-            r.id for r in db.query(Event.id).filter(
-                Event.series_id == series_id,
-                Event.occurrence_index >= from_index,
-            ).all()
-        ]
-        _delete_event_rows(future_ids, db)
-
-        remaining = db.query(func.count(Event.id)).filter(Event.series_id == series_id).scalar()
-        if remaining == 0:
-            db.query(EventSeries).filter(EventSeries.id == series_id).delete()
-        else:
-            series = db.query(EventSeries).filter(EventSeries.id == series_id).first()
-            if series:
-                max_start = db.query(func.max(Event.start_datetime)).filter(
-                    Event.series_id == series_id
-                ).scalar()
-                series.generated_until = max_start
-        db.commit()
-        return {"message": "Future occurrences deleted"}
-
-    # scope == "series"
-    if event.series_id is None:
-        db.query(Promotion).filter(Promotion.event_id == event_id).delete()
-        db.delete(event)
-        db.commit()
-        return {"message": "Event deleted"}
-
-    series_id = event.series_id
-    all_ids = [r.id for r in db.query(Event.id).filter(Event.series_id == series_id).all()]
-    _delete_event_rows(all_ids, db)
-    db.query(EventSeries).filter(EventSeries.id == series_id).delete()
-    db.commit()
-    return {"message": "Series deleted"}
+    return _do_delete_event(event, scope, db)

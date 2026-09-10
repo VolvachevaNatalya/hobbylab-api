@@ -1,10 +1,12 @@
 import io
+import json
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from app.api.events import _do_create_event, _do_delete_event, _do_update_event, _enrich
 from app.api.organizations import (
     _category_map,
     _city_fields,
@@ -19,6 +21,7 @@ from app.models.city import City
 from app.models.classes import Class
 from app.models.event import Event
 from app.models.event_category import EventCategory
+from app.models.event_series import EventSeries
 from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.organization_category import OrganizationCategory
@@ -28,6 +31,7 @@ from app.models.promotion import Promotion
 from app.models.subscription import Subscription
 from app.models.user import User
 from app.schemas.category import AdminCategoryUpdate, CategoryCreate
+from app.schemas.event import EventCreate, EventUpdate
 from app.schemas.organization import AdminOrganizationCreate, AdminOrganizationUpdate
 from app.services.geocoding import geocode
 
@@ -395,6 +399,80 @@ def admin_list_events(
         "limit":  limit,
         "offset": offset,
     }
+
+
+@router.post("/events")
+def admin_create_event(
+    event: EventCreate,
+    db: Session = Depends(get_db),
+):
+    org = db.query(Organization).filter(Organization.id == event.organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    recurrence = event.recurrence
+    event_data = event.model_dump()
+    category_ids = event_data.pop("category_ids")
+    event_data.pop("recurrence", None)
+    if isinstance(event_data.get("age_groups"), list):
+        event_data["age_groups"] = json.dumps(event_data["age_groups"])
+
+    new_event = _do_create_event(event_data, category_ids, recurrence, db)
+    return _enrich(new_event, db)
+
+
+@router.get("/events/{event_id}")
+def admin_get_event(
+    event_id: int,
+    db: Session = Depends(get_db),
+):
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return _enrich(event, db)
+
+
+@router.patch("/events/{event_id}")
+def admin_update_event(
+    event_id: int,
+    event_update: EventUpdate,
+    scope: str = "single",
+    db: Session = Depends(get_db),
+):
+    if scope not in ("single", "future", "series"):
+        raise HTTPException(status_code=400, detail="scope must be single, future, or series")
+
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    recurrence = event_update.recurrence
+    remove_recurrence = (
+        "recurrence" in event_update.model_fields_set and event_update.recurrence is None
+    )
+    update_data = event_update.model_dump(exclude_unset=True)
+    category_ids = update_data.pop("category_ids", None)
+    update_data.pop("recurrence", None)
+    if isinstance(update_data.get("age_groups"), list):
+        update_data["age_groups"] = json.dumps(update_data["age_groups"])
+
+    return _do_update_event(event, update_data, category_ids, recurrence, remove_recurrence, scope, db)
+
+
+@router.delete("/events/{event_id}")
+def admin_delete_event(
+    event_id: int,
+    scope: str = "single",
+    db: Session = Depends(get_db),
+):
+    if scope not in ("single", "future", "series"):
+        raise HTTPException(status_code=400, detail="scope must be single, future, or series")
+
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    return _do_delete_event(event, scope, db)
 
 
 def _category_dict(c: Category) -> dict:
