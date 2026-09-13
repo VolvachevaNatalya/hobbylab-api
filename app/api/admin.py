@@ -3,7 +3,7 @@ import json
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_
+from sqlalchemy import distinct, func, or_
 from sqlalchemy.orm import Session
 
 from app.api.events import _do_create_event, _do_delete_event, _do_update_event, _enrich
@@ -328,9 +328,33 @@ def admin_list_events(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
-    total = db.query(func.count(Event.id)).scalar()
+    # Count display rows: standalone events + one per distinct series.
+    count_standalone = (
+        db.query(func.count(Event.id)).filter(Event.series_id.is_(None)).scalar()
+    )
+    count_series = (
+        db.query(func.count(distinct(Event.series_id)))
+        .filter(Event.series_id.isnot(None))
+        .scalar()
+    )
+    total = count_standalone + count_series
+
+    # For each series, pick the minimum event id as the representative row.
+    series_rep_subq = (
+        db.query(func.min(Event.id).label("id"))
+        .filter(Event.series_id.isnot(None))
+        .group_by(Event.series_id)
+        .subquery()
+    )
+
     events = (
         db.query(Event)
+        .filter(
+            or_(
+                Event.series_id.is_(None),
+                Event.id.in_(db.query(series_rep_subq.c.id)),
+            )
+        )
         .order_by(Event.created_at.desc(), Event.id.desc())
         .offset(offset)
         .limit(limit)
@@ -375,30 +399,72 @@ def admin_list_events(
             "name_he": row.name_he,
         })
 
-    return {
-        "items": [
-            {
-                "id":                e.id,
-                "title":             e.title,
-                "status":            e.status,
-                "start_datetime":    e.start_datetime,
-                "end_datetime":      e.end_datetime,
-                "created_at":        e.created_at,
-                "city":              e.city,
-                "city_id":           e.city_id,
-                "price":             float(e.price) if e.price is not None else None,
-                "is_nationwide":     e.is_nationwide,
-                "series_id":         e.series_id,
-                "organization_id":   e.organization_id,
-                "organization_name": org_name_map.get(e.organization_id),
-                "categories":        cats_by_event.get(e.id, []),
+    # Bulk series data — recurrence info + occurrence stats for series on this page.
+    series_ids_on_page = [e.series_id for e in events if e.series_id is not None]
+    series_map: dict = {}
+    occ_stats_map: dict = {}
+    if series_ids_on_page:
+        for s in db.query(EventSeries).filter(EventSeries.id.in_(series_ids_on_page)).all():
+            series_map[s.id] = s
+
+        occ_rows = (
+            db.query(
+                Event.series_id,
+                func.count(Event.id).label("occ_count"),
+                func.max(Event.start_datetime).label("last_start"),
+            )
+            .filter(Event.series_id.in_(series_ids_on_page))
+            .group_by(Event.series_id)
+            .all()
+        )
+        for row in occ_rows:
+            occ_stats_map[row.series_id] = {
+                "count": row.occ_count,
+                "last_start": row.last_start,
             }
-            for e in events
-        ],
-        "total":  total,
-        "limit":  limit,
-        "offset": offset,
-    }
+
+    items = []
+    for e in events:
+        recurrence = None
+        occurrence_count = None
+        last_start_datetime = None
+
+        if e.series_id is not None:
+            s = series_map.get(e.series_id)
+            if s:
+                recurrence = {
+                    "frequency":   s.frequency,
+                    "interval":    s.interval,
+                    "end_type":    s.end_type,
+                    "total_count": s.total_count,
+                    "end_date":    str(s.end_date) if s.end_date else None,
+                }
+            stats = occ_stats_map.get(e.series_id, {})
+            occurrence_count = stats.get("count")
+            last_start = stats.get("last_start")
+            last_start_datetime = last_start.isoformat() if last_start else None
+
+        items.append({
+            "id":                   e.id,
+            "title":                e.title,
+            "status":               e.status,
+            "start_datetime":       e.start_datetime,
+            "end_datetime":         e.end_datetime,
+            "created_at":           e.created_at,
+            "city":                 e.city,
+            "city_id":              e.city_id,
+            "price":                float(e.price) if e.price is not None else None,
+            "is_nationwide":        e.is_nationwide,
+            "series_id":            e.series_id,
+            "organization_id":      e.organization_id,
+            "organization_name":    org_name_map.get(e.organization_id),
+            "categories":           cats_by_event.get(e.id, []),
+            "recurrence":           recurrence,
+            "occurrence_count":     occurrence_count,
+            "last_start_datetime":  last_start_datetime,
+        })
+
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.post("/events")

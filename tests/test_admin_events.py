@@ -15,6 +15,7 @@ _EXPECTED_EVENT_FIELDS = {
     "id", "title", "status", "start_datetime", "end_datetime",
     "created_at", "city", "city_id", "price", "is_nationwide",
     "series_id", "organization_id", "organization_name", "categories",
+    "recurrence", "occurrence_count", "last_start_datetime",
 }
 
 _EXPECTED_CATEGORY_FIELDS = {"id", "name", "name_en", "name_ru", "name_he"}
@@ -265,6 +266,120 @@ def test_admin_events_newest_first(client, db):
     pos = {eid: ids.index(eid) for eid in [e1.id, e2.id, e3.id]}
     # e3 created last → appears first
     assert pos[e3.id] < pos[e2.id] < pos[e1.id]
+
+
+# ── Standalone list items have null series fields ─────────────────────────────
+
+def test_admin_events_standalone_has_null_series_fields(client, db):
+    admin = _make_user(db, "ae_sa_null@x.com", is_system_admin=True)
+    org = _make_org(db)
+    _make_event(db, org.id, title="StandaloneNullFields")
+
+    resp = client.get("/admin/events", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["title"] == "StandaloneNullFields")
+    assert item["recurrence"] is None
+    assert item["occurrence_count"] is None
+    assert item["last_start_datetime"] is None
+
+
+# ── Series grouping ───────────────────────────────────────────────────────────
+
+def test_admin_events_series_grouped_as_one_row(client, db):
+    """A 4-occurrence series appears as exactly one row in the list."""
+    admin = _make_user(db, "ae_grp@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, _ = _make_series(db, org.id, cat.id, count=4)
+
+    resp = client.get("/admin/events", headers=_auth(admin.id))
+    series_items = [i for i in resp.json()["items"] if i["series_id"] == series.id]
+    assert len(series_items) == 1
+
+
+def test_admin_events_total_counts_series_once(client, db):
+    """total reflects display rows: 1 standalone + 1 series = 2."""
+    admin = _make_user(db, "ae_tot@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    _make_event(db, org.id, title="Standalone")
+    _make_series(db, org.id, cat.id, count=10)
+
+    resp = client.get("/admin/events", params={"limit": 100}, headers=_auth(admin.id))
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["items"]) == 2
+
+
+def test_admin_events_series_row_has_recurrence(client, db):
+    """Series row includes populated recurrence info from EventSeries."""
+    admin = _make_user(db, "ae_rec_info@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, _ = _make_series(db, org.id, cat.id, count=4)
+
+    resp = client.get("/admin/events", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["series_id"] == series.id)
+    rec = item["recurrence"]
+    assert rec is not None
+    assert rec["frequency"] == "weekly"
+    assert rec["interval"] == 1
+    assert rec["end_type"] == "count"
+    assert rec["total_count"] == 4
+    assert rec["end_date"] is None
+
+
+def test_admin_events_series_row_occurrence_count(client, db):
+    """occurrence_count reflects how many occurrences exist in the series."""
+    admin = _make_user(db, "ae_occ@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, _ = _make_series(db, org.id, cat.id, count=6)
+
+    resp = client.get("/admin/events", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["series_id"] == series.id)
+    assert item["occurrence_count"] == 6
+
+
+def test_admin_events_series_row_last_start_datetime(client, db):
+    """last_start_datetime matches the latest start_datetime across all occurrences."""
+    admin = _make_user(db, "ae_last@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, events = _make_series(db, org.id, cat.id, count=4)
+
+    expected_last = max(e.start_datetime for e in events).isoformat()
+    resp = client.get("/admin/events", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["series_id"] == series.id)
+    assert item["last_start_datetime"] == expected_last
+
+
+def test_admin_events_series_row_uses_first_occurrence(client, db):
+    """The representative row for a series is the first occurrence (min id)."""
+    admin = _make_user(db, "ae_first@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    series, events = _make_series(db, org.id, cat.id, count=4)
+
+    min_event_id = min(e.id for e in events)
+    resp = client.get("/admin/events", headers=_auth(admin.id))
+    item = next(i for i in resp.json()["items"] if i["series_id"] == series.id)
+    assert item["id"] == min_event_id
+
+
+def test_admin_events_pagination_with_series(client, db):
+    """Pagination over a mix of standalone and series gives correct totals."""
+    admin = _make_user(db, "ae_pgser@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    # Create 3 standalone + 1 series (5 occurrences) = 4 display rows.
+    for i in range(3):
+        _make_event(db, org.id, title=f"Stand_{i}")
+    _make_series(db, org.id, cat.id, count=5)
+
+    resp = client.get("/admin/events", params={"limit": 100}, headers=_auth(admin.id))
+    data = resp.json()
+    assert data["total"] == 4
+    assert len(data["items"]) == 4
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
