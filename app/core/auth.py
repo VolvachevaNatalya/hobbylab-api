@@ -1,8 +1,9 @@
+import os
+
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-from jose import jwt
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
-import os
 
 from app.db.dependencies import get_db
 from app.models.user import User
@@ -14,17 +15,42 @@ ALGORITHM = "HS256"
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("user_id")
-    except:
+        # Refresh tokens must never be accepted here.
+        # Tokens without a "type" claim (issued before this change) are still
+        # treated as access tokens for backward compatibility.
+        if payload.get("type") == "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
     user = db.query(User).filter(User.id == user_id).first()
-
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+
+    return user
+
+
+def decode_refresh_token(token: str, db: Session) -> User:
+    """Validate a refresh token and return the associated user.
+
+    Raises HTTPException(401) for any failure — expired, wrong type, bad
+    signature, or missing/deleted user. Error details are kept generic to
+    avoid leaking information.
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("user_id")
+        if payload.get("type") != "refresh":
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
     return user
 

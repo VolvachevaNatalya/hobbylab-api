@@ -9,11 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import decode_refresh_token, get_current_user
 from app.db.dependencies import get_db
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse
-from app.core.security import verify_password, create_access_token, hash_password
+from app.core.security import create_access_token, create_refresh_token, hash_password, verify_password
 from fastapi.security import OAuth2PasswordRequestForm
 
 logger = logging.getLogger(__name__)
@@ -71,9 +71,12 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
 @router.post("/auth/login")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-
     user = db.query(User).filter(User.email == form_data.username).first()
 
     if not user:
@@ -82,11 +85,21 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     if not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=400, detail="Invalid credentials")
 
-    token = create_access_token({"user_id": user.id})
-
     return {
-        "access_token": token,
-        "token_type": "bearer"
+        "access_token": create_access_token({"user_id": user.id}),
+        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "token_type": "bearer",
+    }
+
+
+@router.post("/auth/refresh")
+def refresh_tokens(payload: RefreshRequest, db: Session = Depends(get_db)):
+    """Exchange a valid refresh token for a new access token and rotated refresh token."""
+    user = decode_refresh_token(payload.refresh_token, db)
+    return {
+        "access_token": create_access_token({"user_id": user.id}),
+        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "token_type": "bearer",
     }
 
 @router.post("/auth/register", response_model=UserResponse)
@@ -167,8 +180,11 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(user)
 
-    token = create_access_token({"user_id": user.id})
-    return {"access_token": token, "token_type": "bearer"}
+    return {
+        "access_token": create_access_token({"user_id": user.id}),
+        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "token_type": "bearer",
+    }
 
 
 @router.post("/auth/facebook-login")
@@ -227,8 +243,11 @@ def facebook_login(payload: FacebookLoginRequest, db: Session = Depends(get_db))
             db.commit()
             db.refresh(user)
 
-    token = create_access_token({"user_id": user.id})
-    return {"access_token": token, "token_type": "bearer"}
+    return {
+        "access_token": create_access_token({"user_id": user.id}),
+        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "token_type": "bearer",
+    }
 
 
 @router.post("/auth/apple-login")
@@ -298,8 +317,11 @@ def apple_login(payload: AppleLoginRequest, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(user)
 
-    token = create_access_token({"user_id": user.id})
-    return {"access_token": token, "token_type": "bearer"}
+    return {
+        "access_token": create_access_token({"user_id": user.id}),
+        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "token_type": "bearer",
+    }
 
 
 @router.post("/auth/change-password")
