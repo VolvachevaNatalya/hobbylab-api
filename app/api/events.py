@@ -886,6 +886,118 @@ def _update_series(
     return _enrich(refreshed, db)
 
 
+def _rebuild_series_recurrence(
+    event: Event,
+    original_series: EventSeries,
+    update_data: dict,
+    category_ids: Optional[List[int]],
+    recurrence: RecurrenceCreate,
+    db: Session,
+) -> "EventResponse":
+    """Rebuild series recurrence from the earliest upcoming occurrence.
+
+    Past occurrences (start_datetime < _local_now()) are left completely untouched.
+    Future occurrences are deleted and regenerated under the new recurrence rule.
+    The EventSeries row is updated in place — no new series is created.
+
+    All validation and date generation happen BEFORE any destructive operations so
+    that a failure (e.g. invalid category) never permanently removes future events.
+    """
+    # Fix 1: use current local time, not start-of-day, so an event earlier today
+    # is correctly preserved as past.
+    cutoff = _local_now()
+
+    past_count: int = (
+        db.query(func.count(Event.id))
+        .filter(Event.series_id == original_series.id, Event.start_datetime < cutoff)
+        .scalar()
+    )
+
+    first_upcoming: Optional[Event] = (
+        db.query(Event)
+        .filter(Event.series_id == original_series.id, Event.start_datetime >= cutoff)
+        .order_by(Event.start_datetime.asc())
+        .first()
+    )
+
+    if first_upcoming is None:
+        # All occurrences are past — update metadata only, generate nothing new.
+        original_series.frequency = recurrence.frequency
+        original_series.interval = recurrence.interval
+        original_series.end_type = recurrence.end_type
+        # Fix 2: total_count is the actual series size (all events are past here).
+        original_series.total_count = past_count if recurrence.end_type == "count" else None
+        original_series.end_date = recurrence.end_date
+        db.commit()
+        db.refresh(event)
+        return _enrich(event, db)
+
+    new_start = first_upcoming.start_datetime
+    duration = _compute_duration(first_upcoming, update_data)
+
+    # Fix 3: validate and compute everything BEFORE touching the database so that
+    # a validation error never leaves the series in a half-deleted state.
+    if category_ids is not None:
+        _validate_category_ids(category_ids, db)
+        final_cats = category_ids
+    else:
+        final_cats = _get_event_category_ids(
+            first_upcoming.id, first_upcoming.category_id, db
+        )
+
+    shared = _build_shared_fields(first_upcoming, update_data)
+
+    # For count-based end type, total_count always means the total series size
+    # (past + future). Validate and compute how many future events to generate.
+    if recurrence.end_type == "count":
+        if recurrence.total_count <= past_count:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"total_count ({recurrence.total_count}) must exceed the number of "
+                    f"past occurrences ({past_count})"
+                ),
+            )
+        future_count = recurrence.total_count - past_count
+        generation_rule = recurrence.model_copy(update={"total_count": future_count})
+    else:
+        generation_rule = recurrence
+
+    # Generate dates before any destructive work (fail fast if rule is invalid).
+    dates = generate_dates(generation_rule, new_start)
+
+    # All validation succeeded — now perform the destructive operations.
+    future_ids = [
+        r.id for r in db.query(Event.id).filter(
+            Event.series_id == original_series.id,
+            Event.start_datetime >= cutoff,
+        ).all()
+    ]
+    if future_ids:
+        _delete_event_rows(future_ids, db)
+
+    _create_occurrences(
+        db, dates, shared, final_cats, original_series.id, duration,
+        start_index=past_count,
+    )
+
+    original_series.frequency = recurrence.frequency
+    original_series.interval = recurrence.interval
+    original_series.end_type = recurrence.end_type
+    original_series.total_count = recurrence.total_count if recurrence.end_type == "count" else None
+    original_series.end_date = recurrence.end_date
+    original_series.generated_until = dates[-1]
+    db.commit()
+
+    rebuilt = (
+        db.query(Event)
+        .filter(Event.series_id == original_series.id, Event.start_datetime >= cutoff)
+        .order_by(Event.start_datetime.asc())
+        .first()
+    )
+    return _enrich(rebuilt if rebuilt is not None else event, db)
+
+
 # ── Shared create / update / delete helpers (callable by admin and mobile) ─────
 
 def _do_create_event(
@@ -965,6 +1077,11 @@ def _do_update_event(
     # Adding recurrence to a standalone event (scope irrelevant): convert to series in-place.
     if recurrence is not None and event.series_id is None:
         return _convert_standalone_to_series(event, update_data, category_ids, recurrence, db)
+    # Changing recurrence on an existing series: rebuild future occurrences in place.
+    # Scope is irrelevant here — no new series is ever created for a recurrence change.
+    if recurrence is not None and event.series_id is not None:
+        original_series = db.query(EventSeries).filter(EventSeries.id == event.series_id).first()
+        return _rebuild_series_recurrence(event, original_series, update_data, category_ids, recurrence, db)
     if scope == "single":
         return _update_single(event, update_data, category_ids, recurrence, remove_recurrence, db)
     if scope == "future":

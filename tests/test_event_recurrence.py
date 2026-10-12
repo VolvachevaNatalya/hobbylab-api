@@ -299,24 +299,29 @@ def test_delete_scope_series(client, db):
     assert db.query(EventSeries).filter(EventSeries.id == series_id).first() is None
 
 
-# ── 13. UPDATE scope=single rejects recurrence change ────────────────────────
+# ── 13. UPDATE with recurrence ignores scope — rebuild fires regardless ────────
 
-def test_update_scope_single_rejects_recurrence_change(client, db):
+def test_recurrence_change_ignores_scope_single(client, db):
+    """scope=single is irrelevant when a recurrence change is sent; rebuild fires."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db)
 
-    body = _event_body(org.id, [cat.id], recurrence=_recurrence("weekly", 1, "count", total_count=3))
-    event_id = client.post("/events/", json=body, headers=_auth(user.id)).json()["id"]
+    body = _event_body(org.id, [cat.id], start="2099-01-07T10:00:00",
+                       recurrence=_recurrence("weekly", 1, "count", total_count=3))
+    data = client.post("/events/", json=body, headers=_auth(user.id)).json()
+    event_id = data["id"]
+    series_id = data["series_id"]
 
     resp = client.put(
         f"/events/{event_id}",
-        json={"recurrence": _recurrence("daily", 1, "count", total_count=5)},
+        json={"recurrence": _recurrence("daily", 1, "count", total_count=2)},
         params={"scope": "single"},
         headers=_auth(user.id),
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    assert resp.json()["series_id"] == series_id
 
 
 # ── 14. UPDATE scope=single updates only selected event ──────────────────────
@@ -391,24 +396,27 @@ def test_update_scope_future_no_recurrence_change(client, db):
         assert e.title == "Future Title"
 
 
-# ── 16. UPDATE scope=future with new recurrence regenerates from new rule ─────
+# ── 16. UPDATE scope=future with new recurrence rebuilds existing series ───────
 
 def test_update_scope_future_with_new_recurrence(client, db):
+    """scope=future with recurrence no longer splits — rebuilds existing series from first upcoming."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db)
 
-    # Weekly × 4 → Aug 3, 10, 17, 24
-    body = _event_body(org.id, [cat.id], recurrence=_recurrence("weekly", 1, "count", total_count=4))
+    # Weekly × 4 → 2099-01-07, 14, 21, 28 (all future)
+    body = _event_body(org.id, [cat.id], start="2099-01-07T10:00:00",
+                       recurrence=_recurrence("weekly", 1, "count", total_count=4))
     data = client.post("/events/", json=body, headers=_auth(user.id)).json()
     series_id = data["series_id"]
 
-    # Take occurrence index 2 (Aug 17) and switch to daily × 2 from that date
     occ2 = db.query(Event).filter(
         Event.series_id == series_id, Event.occurrence_index == 2
     ).first()
 
+    # Switch to daily × 2 from occ 2 — but rebuild ignores which occ was clicked
+    # and starts from the earliest upcoming (occ 0 = Jan 7)
     resp = client.put(
         f"/events/{occ2.id}",
         json={"recurrence": _recurrence("daily", 1, "count", total_count=2)},
@@ -418,16 +426,12 @@ def test_update_scope_future_with_new_recurrence(client, db):
     assert resp.status_code == 200
 
     db.expire_all()
-    # Original series now has only 2 events (indices 0 and 1)
-    assert _series_count(db, series_id) == 2
-
-    # New series has 2 events starting from Aug 17, daily
-    new_series_id = resp.json()["series_id"]
-    assert new_series_id != series_id
-    new_events = db.query(Event).filter(Event.series_id == new_series_id).order_by(Event.occurrence_index).all()
-    assert len(new_events) == 2
-    assert new_events[0].start_datetime == datetime(2026, 8, 17, 10, 0, 0)
-    assert new_events[1].start_datetime == datetime(2026, 8, 18, 10, 0, 0)
+    # Same series (no split), 2 daily events starting from Jan 7
+    assert resp.json()["series_id"] == series_id
+    events = db.query(Event).filter(Event.series_id == series_id).order_by(Event.occurrence_index).all()
+    assert len(events) == 2
+    assert events[0].start_datetime == datetime(2099, 1, 7, 10, 0, 0)
+    assert events[1].start_datetime == datetime(2099, 1, 8, 10, 0, 0)
 
 
 # ── 17. UPDATE scope=series changes all events ────────────────────────────────
@@ -456,21 +460,23 @@ def test_update_scope_series_changes_all(client, db):
     assert all(e.title == "Series Title" for e in events)
 
 
-# ── 18. UPDATE scope=series with new recurrence regenerates all ───────────────
+# ── 18. UPDATE scope=series with new recurrence rebuilds from first upcoming ───
 
 def test_update_scope_series_with_new_recurrence(client, db):
+    """scope=series + recurrence rebuilds future occurrences in the same series."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db)
 
-    # Weekly × 4 → Aug 3, 10, 17, 24
-    body = _event_body(org.id, [cat.id], recurrence=_recurrence("weekly", 1, "count", total_count=4))
+    # Weekly × 4 → 2099-01-07, 14, 21, 28 (all future)
+    body = _event_body(org.id, [cat.id], start="2099-01-07T10:00:00",
+                       recurrence=_recurrence("weekly", 1, "count", total_count=4))
     data = client.post("/events/", json=body, headers=_auth(user.id)).json()
     series_id = data["series_id"]
     event_id = data["id"]
 
-    # Switch to daily × 3 — should delete all 4 and regenerate 3 daily events
+    # Switch to daily × 3 — rebuilds from Jan 7 in the same series
     resp = client.put(
         f"/events/{event_id}",
         json={"recurrence": _recurrence("daily", 1, "count", total_count=3)},
@@ -482,9 +488,9 @@ def test_update_scope_series_with_new_recurrence(client, db):
     db.expire_all()
     events = db.query(Event).filter(Event.series_id == series_id).order_by(Event.occurrence_index).all()
     assert len(events) == 3
-    assert events[0].start_datetime == datetime(2026, 8, 3, 10, 0, 0)
-    assert events[1].start_datetime == datetime(2026, 8, 4, 10, 0, 0)
-    assert events[2].start_datetime == datetime(2026, 8, 5, 10, 0, 0)
+    assert events[0].start_datetime == datetime(2099, 1, 7, 10, 0, 0)
+    assert events[1].start_datetime == datetime(2099, 1, 8, 10, 0, 0)
+    assert events[2].start_datetime == datetime(2099, 1, 9, 10, 0, 0)
 
 
 # ── 19. Split at last count occurrence → standalone ───────────────────────────
@@ -519,17 +525,18 @@ def test_split_at_last_count_occurrence_becomes_standalone(client, db):
     assert result.title == "Standalone Now"
 
 
-# ── 21. scope=future + unchanged recurrence preserves remaining count ─────────
+# ── 21. scope=future + unchanged recurrence preserves total count ─────────────
 
-def test_update_future_count_split_preserves_remaining_count(client, db):
-    """Reproduce: daily×5, edit occ index=3 with scope=future sending original recurrence unchanged.
-    New series must have 2 occurrences (5-3), not 5."""
+def test_recurrence_rebuild_preserves_total_count_when_unchanged(client, db):
+    """When client echoes unchanged count with recurrence, rebuild keeps same series and total count."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db)
 
-    body = _event_body(org.id, [cat.id], recurrence=_recurrence("daily", 1, "count", total_count=5))
+    # daily × 5, all future
+    body = _event_body(org.id, [cat.id], start="2099-01-07T10:00:00",
+                       recurrence=_recurrence("daily", 1, "count", total_count=5))
     data = client.post("/events/", json=body, headers=_auth(user.id)).json()
     series_id = data["series_id"]
 
@@ -537,7 +544,7 @@ def test_update_future_count_split_preserves_remaining_count(client, db):
         Event.series_id == series_id, Event.occurrence_index == 3
     ).first()
 
-    # Flutter sends back the original recurrence unchanged (the bug trigger)
+    # Flutter echoes back unchanged recurrence — rebuild fires, total count preserved
     resp = client.put(
         f"/events/{occ3.id}",
         json={"title": "Updated", "recurrence": _recurrence("daily", 1, "count", total_count=5)},
@@ -547,28 +554,26 @@ def test_update_future_count_split_preserves_remaining_count(client, db):
     assert resp.status_code == 200
 
     db.expire_all()
-    # Original series: indices 0, 1, 2 → 3 events
-    assert _series_count(db, series_id) == 3
+    # Same series (no split), 5 events (all future, past_count=0, effective=5-0=5)
+    assert resp.json()["series_id"] == series_id
+    assert _series_count(db, series_id) == 5
 
-    # New series: 5 - 3 = 2 remaining occurrences
-    new_series_id = resp.json()["series_id"]
-    assert new_series_id != series_id
-    assert _series_count(db, new_series_id) == 2
-
-    new_series = db.query(EventSeries).filter(EventSeries.id == new_series_id).first()
-    assert new_series.total_count == 2
+    series = db.query(EventSeries).filter(EventSeries.id == series_id).first()
+    assert series.total_count == 5
 
 
 # ── 22. scope=future + explicit new count uses that count ─────────────────────
 
-def test_update_future_count_split_explicit_new_count(client, db):
-    """When the user explicitly changes total_count, that value is used as-is."""
+def test_recurrence_rebuild_explicit_count_change(client, db):
+    """When user explicitly changes total_count, that count is used for the rebuilt series."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db)
 
-    body = _event_body(org.id, [cat.id], recurrence=_recurrence("weekly", 1, "count", total_count=4))
+    # weekly × 4, all future
+    body = _event_body(org.id, [cat.id], start="2099-01-07T10:00:00",
+                       recurrence=_recurrence("weekly", 1, "count", total_count=4))
     data = client.post("/events/", json=body, headers=_auth(user.id)).json()
     series_id = data["series_id"]
 
@@ -586,23 +591,25 @@ def test_update_future_count_split_explicit_new_count(client, db):
     assert resp.status_code == 200
 
     db.expire_all()
-    new_series_id = resp.json()["series_id"]
-    new_series = db.query(EventSeries).filter(EventSeries.id == new_series_id).first()
-    assert new_series.total_count == 3
-    assert _series_count(db, new_series_id) == 3
+    # Same series, count is now 3
+    assert resp.json()["series_id"] == series_id
+    series = db.query(EventSeries).filter(EventSeries.id == series_id).first()
+    assert series.total_count == 3
+    assert _series_count(db, series_id) == 3
 
 
-# ── 23. Count split preserves remaining count across all frequencies ──────────
+# ── 23. Unchanged recurrence rebuilds same series across all frequencies ───────
 
 @pytest.mark.parametrize("frequency", ["daily", "weekly", "monthly", "yearly"])
-def test_update_future_count_split_all_frequencies(client, db, frequency):
-    """Splitting at index 1 with unchanged recurrence gives 4-1=3 remaining for all frequencies."""
+def test_recurrence_rebuild_unchanged_count_all_frequencies(client, db, frequency):
+    """Echoing unchanged count rebuilds same series with full count (all future, past_count=0)."""
     user = _make_user(db)
     org = _make_org(db)
     _make_membership(db, org.id, user.id)
     cat = _make_category(db)
 
-    body = _event_body(org.id, [cat.id], recurrence=_recurrence(frequency, 1, "count", total_count=4))
+    body = _event_body(org.id, [cat.id], start="2099-01-07T10:00:00",
+                       recurrence=_recurrence(frequency, 1, "count", total_count=4))
     data = client.post("/events/", json=body, headers=_auth(user.id)).json()
     series_id = data["series_id"]
 
@@ -619,11 +626,11 @@ def test_update_future_count_split_all_frequencies(client, db, frequency):
     assert resp.status_code == 200
 
     db.expire_all()
-    new_series_id = resp.json()["series_id"]
-    new_series = db.query(EventSeries).filter(EventSeries.id == new_series_id).first()
-    # 4 - 1 = 3 remaining
-    assert new_series.total_count == 3
-    assert _series_count(db, new_series_id) == 3
+    # Same series (no split), count unchanged (4 - 0 past = 4)
+    assert resp.json()["series_id"] == series_id
+    series = db.query(EventSeries).filter(EventSeries.id == series_id).first()
+    assert series.total_count == 4
+    assert _series_count(db, series_id) == 4
 
 
 # ── 20. Standalone events unaffected by series delete ────────────────────────
