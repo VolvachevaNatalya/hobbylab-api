@@ -26,6 +26,7 @@ from app.api.support import router as support_router
 from app.api.conversations import router as conversations_router
 from app.api.messages import router as messages_router
 from app.api.notifications import router as notifications_router
+from app.api.group_schedules import router as group_schedules_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
 import app.models.category          # noqa: F401
@@ -69,6 +70,7 @@ app.include_router(support_router)
 app.include_router(conversations_router)
 app.include_router(messages_router)
 app.include_router(notifications_router)
+app.include_router(group_schedules_router)
 
 TEST_ENGINE = create_engine(
     "sqlite://",
