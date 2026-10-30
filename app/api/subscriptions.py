@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.db.database import SessionLocal
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user, require_system_admin
+from app.core.org_permissions import get_membership
+from app.db.dependencies import get_db
 from app.models.subscription import Subscription
 from app.models.user import User
 from app.schemas.subscription import SubscriptionCreate, SubscriptionUpdate
@@ -11,20 +12,16 @@ from app.schemas.subscription import SubscriptionCreate, SubscriptionUpdate
 router = APIRouter(prefix="/subscriptions", tags=["subscriptions"])
 
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 @router.get("/organization/{organization_id}")
 def get_subscription(
     organization_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
+    if not current_user.is_system_admin:
+        if not get_membership(organization_id, current_user.id, db):
+            raise HTTPException(status_code=403, detail="Not authorized")
+
     subscription = (
         db.query(Subscription)
         .filter(Subscription.organization_id == organization_id)
@@ -41,7 +38,7 @@ def get_subscription(
 def create_subscription(
     data: SubscriptionCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    _admin: User = Depends(require_system_admin),
 ):
     existing = (
         db.query(Subscription)
@@ -53,11 +50,9 @@ def create_subscription(
         raise HTTPException(status_code=400, detail="subscription already exists")
 
     subscription = Subscription(**data.dict())
-
     db.add(subscription)
     db.commit()
     db.refresh(subscription)
-
     return subscription
 
 
@@ -66,7 +61,7 @@ def update_subscription(
     subscription_id: int,
     data: SubscriptionUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    _admin: User = Depends(require_system_admin),
 ):
     subscription = (
         db.query(Subscription)
@@ -82,14 +77,14 @@ def update_subscription(
 
     db.commit()
     db.refresh(subscription)
-
     return subscription
+
 
 @router.delete("/{subscription_id}")
 def delete_subscription(
     subscription_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    _admin: User = Depends(require_system_admin),
 ):
     subscription = (
         db.query(Subscription)
@@ -102,5 +97,4 @@ def delete_subscription(
 
     db.delete(subscription)
     db.commit()
-
     return {"status": "deleted"}
