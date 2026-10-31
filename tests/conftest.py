@@ -30,6 +30,7 @@ from app.api.group_schedules import router as group_schedules_router
 from app.api.review_images import router as review_images_router
 from app.api.payments import router as payments_router
 from app.api.subscriptions import router as subscriptions_router
+from app.api.promotions import router as promotions_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
 import app.models.category          # noqa: F401
@@ -77,12 +78,26 @@ app.include_router(group_schedules_router)
 app.include_router(review_images_router)
 app.include_router(payments_router)
 app.include_router(subscriptions_router)
+app.include_router(promotions_router)
+
+import math
+from sqlalchemy import event as sa_event
 
 TEST_ENGINE = create_engine(
     "sqlite://",
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
 )
+
+
+@sa_event.listens_for(TEST_ENGINE, "connect")
+def _register_sqlite_math(dbapi_conn, _rec):
+    """Register trig functions needed by the Haversine geo-search query."""
+    dbapi_conn.create_function("cos", 1, math.cos)
+    dbapi_conn.create_function("sin", 1, math.sin)
+    dbapi_conn.create_function("acos", 1, math.acos)
+    dbapi_conn.create_function("radians", 1, math.radians)
+    dbapi_conn.create_function("least", -1, lambda *args: min(args))
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=TEST_ENGINE)
 
 
