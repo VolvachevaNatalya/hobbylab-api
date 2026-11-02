@@ -306,3 +306,82 @@ def test_admin_me_returns_401_with_refresh_token(client, db):
     refresh = create_refresh_token({"user_id": admin.id})
     resp = client.get("/admin/me", headers={"Authorization": f"Bearer {refresh}"})
     assert resp.status_code == 401
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Expiration claim presence and value
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_access_token_has_expiration_claim(client, db):
+    """Every issued access token must carry an 'exp' claim."""
+    user = _make_user(db, "exp_claim@x.com", "pw1")
+    token = create_access_token({"user_id": user.id})
+    payload = jwt.decode(token, _JWT_SECRET, algorithms=[ALGORITHM])
+    assert "exp" in payload
+
+
+def test_access_token_expiry_matches_configured_lifetime(client, db):
+    """Token exp must be approximately ACCESS_TOKEN_EXPIRE_MINUTES from now."""
+    from app.core.security import ACCESS_TOKEN_EXPIRE_MINUTES
+    user = _make_user(db, "exp_dur@x.com", "pw1")
+    token = create_access_token({"user_id": user.id})
+    payload = jwt.decode(token, _JWT_SECRET, algorithms=[ALGORITHM])
+    expected = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    actual = datetime.utcfromtimestamp(payload["exp"])
+    assert abs((actual - expected).total_seconds()) < 10
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Expiration enforcement on protected endpoints
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_expired_access_token_rejected_on_protected_endpoint(client, db):
+    """An expired access token must return 401 on any protected endpoint."""
+    admin = _make_user(db, "exp_rej@x.com", "pw1", is_admin=True)
+    expired = _expired_token(admin.id, "access")
+    resp = client.get(_PROTECTED_URL, headers={"Authorization": f"Bearer {expired}"})
+    assert resp.status_code == 401
+
+
+def test_expired_access_token_rejected_on_non_admin_endpoint(client, db):
+    """Expiry is enforced on all authenticated endpoints, not just /admin/me."""
+    user = _make_user(db, "exp_gen@x.com", "pw1")
+    expired = _expired_token(user.id, "access")
+    # /subscriptions/organization/{id} requires get_current_user; 401 fires before DB lookup
+    resp = client.get(
+        "/subscriptions/organization/1",
+        headers={"Authorization": f"Bearer {expired}"},
+    )
+    assert resp.status_code == 401
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Malformed and tampered tokens
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_malformed_access_token_rejected_on_protected_endpoint(client, db):
+    """A string that is not a valid JWT must return 401 on a protected endpoint."""
+    resp = client.get(
+        _PROTECTED_URL,
+        headers={"Authorization": "Bearer not.a.valid.jwt"},
+    )
+    assert resp.status_code == 401
+
+
+def test_access_token_with_wrong_signature_rejected(client, db):
+    """A token signed with a different secret must be rejected as tampered."""
+    admin = _make_user(db, "sig_rej@x.com", "pw1", is_admin=True)
+    payload = {
+        "user_id": admin.id,
+        "type": "access",
+        "exp": datetime.utcnow() + timedelta(hours=1),
+    }
+    tampered = jwt.encode(payload, "wrong-secret-key", algorithm=ALGORITHM)
+    resp = client.get(_PROTECTED_URL, headers={"Authorization": f"Bearer {tampered}"})
+    assert resp.status_code == 401
+
+
+def test_no_authorization_header_returns_401(client, db):
+    """Requests with no Authorization header must return 401 on protected endpoints."""
+    resp = client.get(_PROTECTED_URL)
+    assert resp.status_code == 401
