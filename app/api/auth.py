@@ -29,6 +29,15 @@ _REGISTRATION_RATE_WINDOW = timedelta(hours=1)
 _reg_attempts: Dict[str, List[datetime]] = defaultdict(list)
 _reg_lock = threading.Lock()
 
+# --- In-process IP-based rate limiter for login and OAuth login endpoints ---
+# All four token-issuance endpoints share one bucket so that an attacker cannot
+# circumvent the limit by alternating between them.
+_LOGIN_RATE_LIMIT = 10
+_LOGIN_RATE_WINDOW = timedelta(minutes=15)
+
+_login_attempts: Dict[str, List[datetime]] = defaultdict(list)
+_login_lock = threading.Lock()
+
 
 def _get_client_ip(request: Request) -> str:
     # Railway sets X-Real-IP to the original client IP.
@@ -54,6 +63,23 @@ def _check_registration_rate_limit(ip: str) -> None:
         _reg_attempts[ip] = recent
 
 
+def _check_login_rate_limit(ip: str) -> None:
+    now = datetime.utcnow()
+    cutoff = now - _LOGIN_RATE_WINDOW
+    with _login_lock:
+        recent = [t for t in _login_attempts[ip] if t > cutoff]
+        if len(recent) >= _LOGIN_RATE_LIMIT:
+            oldest = min(recent)
+            retry_after = max(1, int((oldest + _LOGIN_RATE_WINDOW - now).total_seconds()) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="Too many login attempts. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        recent.append(now)
+        _login_attempts[ip] = recent
+
+
 class GoogleLoginRequest(BaseModel):
     id_token: str
 
@@ -76,7 +102,14 @@ class RefreshRequest(BaseModel):
 
 
 @router.post("/auth/login")
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    ip = _get_client_ip(request)
+    _check_login_rate_limit(ip)
+
     user = db.query(User).filter(User.email == form_data.username).first()
 
     if not user:
@@ -142,7 +175,10 @@ def create_user(user: UserCreate, request: Request, db: Session = Depends(get_db
 
 
 @router.post("/auth/google-login")
-def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
+def google_login(request: Request, payload: GoogleLoginRequest, db: Session = Depends(get_db)):
+    ip = _get_client_ip(request)
+    _check_login_rate_limit(ip)
+
     from google.oauth2 import id_token as google_id_token
     from google.auth.transport import requests as google_requests
 
@@ -188,7 +224,10 @@ def google_login(payload: GoogleLoginRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/auth/facebook-login")
-def facebook_login(payload: FacebookLoginRequest, db: Session = Depends(get_db)):
+def facebook_login(request: Request, payload: FacebookLoginRequest, db: Session = Depends(get_db)):
+    ip = _get_client_ip(request)
+    _check_login_rate_limit(ip)
+
     import httpx
 
     try:
@@ -251,7 +290,10 @@ def facebook_login(payload: FacebookLoginRequest, db: Session = Depends(get_db))
 
 
 @router.post("/auth/apple-login")
-def apple_login(payload: AppleLoginRequest, db: Session = Depends(get_db)):
+def apple_login(request: Request, payload: AppleLoginRequest, db: Session = Depends(get_db)):
+    ip = _get_client_ip(request)
+    _check_login_rate_limit(ip)
+
     import httpx
     from jose import jwt, JWTError
 
