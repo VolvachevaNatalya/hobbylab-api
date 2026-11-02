@@ -26,6 +26,8 @@ from app.api.support import router as support_router
 from app.api.conversations import router as conversations_router
 from app.api.messages import router as messages_router
 from app.api.notifications import router as notifications_router
+from app.api.classes import router as classes_router
+from app.api.groups import router as groups_router
 from app.api.group_schedules import router as group_schedules_router
 from app.api.review_images import router as review_images_router
 from app.api.payments import router as payments_router
@@ -74,6 +76,8 @@ app.include_router(support_router)
 app.include_router(conversations_router)
 app.include_router(messages_router)
 app.include_router(notifications_router)
+app.include_router(classes_router)
+app.include_router(groups_router)
 app.include_router(group_schedules_router)
 app.include_router(review_images_router)
 app.include_router(payments_router)

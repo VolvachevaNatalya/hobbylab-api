@@ -9,6 +9,7 @@ from sqlalchemy import and_, case, exists, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
+from app.core.org_permissions import require_owner_or_admin
 from app.db.dependencies import get_db
 from app.models.category import Category
 from app.models.city import City
@@ -16,7 +17,6 @@ from app.models.event import Event
 from app.models.event_category import EventCategory
 from app.models.event_series import EventSeries
 from app.models.organization import Organization
-from app.models.organization_user import OrganizationUser
 from app.models.promotion import Promotion
 from app.models.user import User
 from app.schemas.category import CategoryResponse
@@ -32,6 +32,13 @@ from app.services.geocoding import geocode
 from app.services.recurrence import adjust_original_series_after_split, generate_dates
 
 router = APIRouter(prefix="/events", tags=["events"])
+
+
+def _check_permission(org_id: int, current_user: User, db: Session) -> None:
+    if current_user.is_system_admin:
+        return
+    require_owner_or_admin(org_id, current_user.id, db)
+
 
 # ── Timezone helpers ───────────────────────────────────────────────────────────
 # Events are stored as naive datetimes in Israeli local time (the Flutter app
@@ -1255,12 +1262,7 @@ def create_event(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    org_user = db.query(OrganizationUser).filter(
-        OrganizationUser.organization_id == event.organization_id,
-        OrganizationUser.user_id == current_user.id,
-    ).first()
-    if not org_user:
-        raise HTTPException(status_code=403, detail="No permission")
+    _check_permission(event.organization_id, current_user, db)
 
     recurrence: Optional[RecurrenceCreate] = event.recurrence
     event_data = event.model_dump()
@@ -1302,12 +1304,7 @@ def update_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    org_user = db.query(OrganizationUser).filter(
-        OrganizationUser.organization_id == event.organization_id,
-        OrganizationUser.user_id == current_user.id,
-    ).first()
-    if not org_user:
-        raise HTTPException(status_code=403, detail="No permission")
+    _check_permission(event.organization_id, current_user, db)
 
     recurrence: Optional[RecurrenceCreate] = event_update.recurrence
     remove_recurrence: bool = (
@@ -1352,11 +1349,6 @@ def delete_event(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    org_user = db.query(OrganizationUser).filter(
-        OrganizationUser.organization_id == event.organization_id,
-        OrganizationUser.user_id == current_user.id,
-    ).first()
-    if not org_user:
-        raise HTTPException(status_code=403, detail="No permission")
+    _check_permission(event.organization_id, current_user, db)
 
     return _do_delete_event(event, scope, db)

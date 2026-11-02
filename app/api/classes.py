@@ -12,7 +12,7 @@ from app.models.favorite import Favorite
 from app.models.group import Group
 from app.models.group_schedule import GroupSchedule
 from app.models.organization import Organization
-from app.models.organization_user import OrganizationUser
+from app.core.org_permissions import require_owner_or_admin
 from app.models.promotion import Promotion
 from app.models.review import Review
 from app.models.user import User
@@ -23,6 +23,12 @@ router = APIRouter(
     prefix="/classes",
     tags=["classes"]
 )
+
+
+def _check_permission(org_id: int, current_user: User, db: Session) -> None:
+    if current_user.is_system_admin:
+        return
+    require_owner_or_admin(org_id, current_user.id, db)
 
 
 def _haversine(lat: float, lng: float, lat_col, lng_col):
@@ -140,13 +146,7 @@ def create_class(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    org_user = db.query(OrganizationUser).filter(
-        OrganizationUser.organization_id == class_data.organization_id,
-        OrganizationUser.user_id == current_user.id
-    ).first()
-
-    if not org_user:
-        raise HTTPException(status_code=403, detail="No permission")
+    _check_permission(class_data.organization_id, current_user, db)
 
     new_class = Class(**class_data.model_dump())
 
@@ -321,13 +321,7 @@ def update_class(
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 
-    org_user = db.query(OrganizationUser).filter(
-        OrganizationUser.organization_id == class_obj.organization_id,
-        OrganizationUser.user_id == current_user.id
-    ).first()
-
-    if not org_user:
-        raise HTTPException(status_code=403, detail="No permission")
+    _check_permission(class_obj.organization_id, current_user, db)
 
     for key, value in class_update.model_dump(exclude_unset=True).items():
         setattr(class_obj, key, value)
@@ -390,14 +384,7 @@ def delete_class(
     if not class_obj:
         raise HTTPException(status_code=404, detail="Class not found")
 
-    org_user = db.query(OrganizationUser).filter(
-        OrganizationUser.organization_id == class_obj.organization_id,
-        OrganizationUser.user_id == current_user.id
-    ).first()
-
-    if not org_user:
-        raise HTTPException(status_code=403, detail="No permission")
-
+    _check_permission(class_obj.organization_id, current_user, db)
 
     db.delete(class_obj)
     db.commit()
