@@ -338,10 +338,14 @@ def get_class_details(
 ):
 
     class_obj = db.query(Class).filter(Class.id == class_id).first()
+    if not class_obj:
+        raise HTTPException(status_code=404, detail="Class not found")
 
     organization = db.query(Organization).filter(
         Organization.id == class_obj.organization_id
     ).first()
+    if not organization:
+        raise HTTPException(status_code=404, detail="Organization not found")
 
     groups = db.query(Group).filter(
         Group.class_id == class_id
@@ -360,9 +364,6 @@ def get_class_details(
     rating = None
     if reviews:
         rating = sum(r.rating for r in reviews) / len(reviews)
-
-    if not class_obj:
-        return {"error": "class not found"}
 
     return {
         "class": class_obj,

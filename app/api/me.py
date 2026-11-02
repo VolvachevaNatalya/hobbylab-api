@@ -48,4 +48,14 @@ def update_me(
         current_user.avatar_url = body.avatar_url
     db.commit()
     db.refresh(current_user)
-    return current_user
+    return {
+        "id": current_user.id,
+        "email": None if _is_fallback_email(current_user) else current_user.email,
+        "name": current_user.name,
+        "phone": current_user.phone,
+        "avatar_url": current_user.avatar_url,
+        "provider": current_user.provider,
+        "provider_user_id": current_user.provider_user_id,
+        "status": current_user.status,
+        "created_at": current_user.created_at,
+    }

@@ -1,17 +1,17 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
 
 
 class ReviewCreate(BaseModel):
     organization_id: int
-    rating: int
+    rating: int = Field(ge=1, le=5)
     comment: Optional[str] = None
     photo_urls: Optional[List[str]] = None
 
 
 class ReviewUpdate(BaseModel):
-    rating: Optional[int] = None
+    rating: Optional[int] = Field(default=None, ge=1, le=5)
     comment: Optional[str] = None
     status: Optional[str] = None
 

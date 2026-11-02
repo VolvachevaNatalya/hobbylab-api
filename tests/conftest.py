@@ -32,7 +32,9 @@ from app.api.group_schedules import router as group_schedules_router
 from app.api.review_images import router as review_images_router
 from app.api.payments import router as payments_router
 from app.api.subscriptions import router as subscriptions_router
+from app.api.me import router as me_router
 from app.api.promotions import router as promotions_router
+from app.api.reviews import router as reviews_router
 from app.api.upload import router as upload_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
@@ -81,6 +83,8 @@ app.include_router(groups_router)
 app.include_router(group_schedules_router)
 app.include_router(review_images_router)
 app.include_router(payments_router)
+app.include_router(me_router)
+app.include_router(reviews_router)
 app.include_router(subscriptions_router)
 app.include_router(promotions_router)
 app.include_router(upload_router)
