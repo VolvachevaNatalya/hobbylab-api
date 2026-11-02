@@ -1,11 +1,16 @@
-from typing import Optional
+from __future__ import annotations
+
 import io
+import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 
 from app.core.auth import get_current_user
 from app.models.user import User
 from app.services import storage_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["upload"])
 
@@ -115,8 +120,24 @@ async def upload_file(
     if len(file_bytes) > _MAX_SIZE:
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 10 MB")
 
-    if mime.startswith("image/"):
-        file_bytes, mime, ext = _process_image(file_bytes, ext, upload_type)
+    if ext == "pdf" and not file_bytes.startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Allowed formats: jpeg, jpg, png, gif, webp, pdf",
+        )
 
-    url = storage_service.upload_file(file_bytes, f"upload.{ext}", mime)
+    if mime.startswith("image/"):
+        try:
+            file_bytes, mime, ext = _process_image(file_bytes, ext, upload_type)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported file type. Allowed formats: jpeg, jpg, png, gif, webp, pdf",
+            )
+
+    try:
+        url = storage_service.upload_file(file_bytes, f"upload.{ext}", mime)
+    except Exception:
+        logger.exception("Storage upload failed")
+        raise HTTPException(status_code=502, detail="File upload failed")
     return {"url": url}

@@ -49,10 +49,11 @@ app = FastAPI(swagger_ui_parameters={"persistAuthorization": True})
 
 
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import parse_cors_origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=parse_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -117,6 +117,8 @@ def login(
 
     if not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=400, detail="Invalid credentials")
+    if user.status != "active":
+        raise HTTPException(status_code=403, detail="Account is not active")
 
     return {
         "access_token": create_access_token({"user_id": user.id}),
@@ -216,6 +218,9 @@ def google_login(request: Request, payload: GoogleLoginRequest, db: Session = De
         db.commit()
         db.refresh(user)
 
+    if user.status != "active":
+        raise HTTPException(status_code=403, detail="Account is not active")
+
     return {
         "access_token": create_access_token({"user_id": user.id}),
         "refresh_token": create_refresh_token({"user_id": user.id}),
@@ -281,6 +286,9 @@ def facebook_login(request: Request, payload: FacebookLoginRequest, db: Session 
             db.add(user)
             db.commit()
             db.refresh(user)
+
+    if user.status != "active":
+        raise HTTPException(status_code=403, detail="Account is not active")
 
     return {
         "access_token": create_access_token({"user_id": user.id}),
@@ -358,6 +366,9 @@ def apple_login(request: Request, payload: AppleLoginRequest, db: Session = Depe
             db.add(user)
             db.commit()
             db.refresh(user)
+
+    if user.status != "active":
+        raise HTTPException(status_code=403, detail="Account is not active")
 
     return {
         "access_token": create_access_token({"user_id": user.id}),

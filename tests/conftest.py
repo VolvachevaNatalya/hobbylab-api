@@ -33,6 +33,7 @@ from app.api.review_images import router as review_images_router
 from app.api.payments import router as payments_router
 from app.api.subscriptions import router as subscriptions_router
 from app.api.promotions import router as promotions_router
+from app.api.upload import router as upload_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
 import app.models.category          # noqa: F401
@@ -61,7 +62,6 @@ import app.models.city                      # noqa: F401
 import app.models.event_series               # noqa: F401
 import app.models.support_request            # noqa: F401
 
-# Minimal app — avoids importing modules with Python-3.9-only syntax (e.g. upload.py).
 app = FastAPI()
 app.include_router(admin_router)
 app.include_router(auth_router)
@@ -83,6 +83,7 @@ app.include_router(review_images_router)
 app.include_router(payments_router)
 app.include_router(subscriptions_router)
 app.include_router(promotions_router)
+app.include_router(upload_router)
 
 import math
 from sqlalchemy import event as sa_event
