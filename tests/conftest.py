@@ -29,6 +29,7 @@ from app.api.notifications import router as notifications_router
 from app.api.classes import router as classes_router
 from app.api.groups import router as groups_router
 from app.api.group_schedules import router as group_schedules_router
+from app.api.organization_photos import router as org_photos_router
 from app.api.review_images import router as review_images_router
 from app.api.payments import router as payments_router
 from app.api.subscriptions import router as subscriptions_router
@@ -72,6 +73,7 @@ app.include_router(org_router)
 app.include_router(org_invites_router)
 app.include_router(invite_resolve_router)
 app.include_router(org_members_router)
+app.include_router(org_photos_router)
 app.include_router(events_router)
 app.include_router(categories_router)
 app.include_router(support_router)

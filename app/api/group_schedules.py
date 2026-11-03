@@ -16,6 +16,8 @@ router = APIRouter(
     tags=["group_schedules"]
 )
 
+_MAX_LIMIT = 500
+
 
 def _resolve_org_id(group_id: int, db: Session) -> int:
     """Walk GroupSchedule → Group → Class to get the owning organization id."""
@@ -36,8 +38,13 @@ def _check_permission(org_id: int, current_user: User, db: Session) -> None:
 
 
 @router.get("/", response_model=List[GroupScheduleResponse])
-def get_group_schedules(db: Session = Depends(get_db)):
-    return db.query(GroupSchedule).all()
+def get_group_schedules(
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    limit = min(max(1, limit), _MAX_LIMIT)
+    return db.query(GroupSchedule).offset(offset).limit(limit).all()
 
 
 @router.post("/", response_model=GroupScheduleResponse)

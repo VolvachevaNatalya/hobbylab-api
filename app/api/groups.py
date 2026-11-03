@@ -15,6 +15,8 @@ router = APIRouter(
     tags=["groups"]
 )
 
+_MAX_LIMIT = 500
+
 
 def _check_permission(org_id: int, current_user: User, db: Session) -> None:
     if current_user.is_system_admin:
@@ -23,8 +25,13 @@ def _check_permission(org_id: int, current_user: User, db: Session) -> None:
 
 
 @router.get("/", response_model=List[GroupResponse])
-def get_groups(db: Session = Depends(get_db)):
-    return db.query(Group).all()
+def get_groups(
+    limit: int = 200,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    limit = min(max(1, limit), _MAX_LIMIT)
+    return db.query(Group).offset(offset).limit(limit).all()
 
 
 @router.post("/", response_model=GroupResponse)

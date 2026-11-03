@@ -4,11 +4,14 @@ from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
 from sqlalchemy import case, exists, func
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.org_permissions import require_owner, require_owner_or_admin
+from app.core.security import SECRET_KEY, ALGORITHM
 from app.db.dependencies import get_db
 from app.models.category import Category
 from app.models.city import City
@@ -26,6 +29,29 @@ from app.schemas.organization import OrganizationCreate, OrganizationResponse, O
 from app.services.geocoding import geocode
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
+
+_oauth2_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
+
+def _get_optional_user(
+    token: Optional[str] = Depends(_oauth2_optional),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") == "refresh":
+            return None
+        user_id = payload.get("user_id")
+        if user_id is None:
+            return None
+    except JWTError:
+        return None
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or user.status != "active":
+        return None
+    return user
 
 
 def _haversine(lat: float, lng: float, lat_col, lng_col):
@@ -285,10 +311,27 @@ def get_my_organizations(
 
 
 @router.get("/{organization_id}", response_model=OrganizationResponse)
-def get_organization(organization_id: int, db: Session = Depends(get_db)):
+def get_organization(
+    organization_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(_get_optional_user),
+):
     org = db.query(Organization).filter(Organization.id == organization_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
+
+    # System admins and org owners/admins can see orgs regardless of status.
+    is_privileged = current_user is not None and (
+        current_user.is_system_admin
+        or db.query(OrganizationUser).filter(
+            OrganizationUser.organization_id == organization_id,
+            OrganizationUser.user_id == current_user.id,
+            OrganizationUser.role.in_(["owner", "admin"]),
+        ).first() is not None
+    )
+    if not is_privileged and (org.status != "active" or not org.verified):
+        raise HTTPException(status_code=404, detail="Organization not found")
+
     cat_map = _category_map([org.id], db)
     cities = _city_map([org.city_id], db)
     resp = OrganizationResponse.model_validate(org)

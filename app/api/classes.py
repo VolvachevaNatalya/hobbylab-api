@@ -24,6 +24,8 @@ router = APIRouter(
     tags=["classes"]
 )
 
+_MAX_SEARCH_LIMIT = 100
+
 
 def _check_permission(org_id: int, current_user: User, db: Session) -> None:
     if current_user.is_system_admin:
@@ -178,6 +180,7 @@ def search_classes(
     search: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
+    limit = min(max(1, limit), _MAX_SEARCH_LIMIT)
     query = db.query(
         Class,
         func.avg(Review.rating).label("rating"),

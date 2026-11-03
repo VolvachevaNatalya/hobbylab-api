@@ -20,9 +20,12 @@ def _require_org_owner(org_id: int, current_user: User, db: Session) -> Organiza
     org = db.query(Organization).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
+    if current_user.is_system_admin:
+        return org
     membership = db.query(OrganizationUser).filter(
         OrganizationUser.organization_id == org_id,
         OrganizationUser.user_id == current_user.id,
+        OrganizationUser.role.in_(["owner", "admin"]),
     ).first()
     if not membership:
         raise HTTPException(status_code=403, detail="Not authorized")

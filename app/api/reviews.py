@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.db.dependencies import get_db
 from app.models.review import Review
@@ -23,6 +24,8 @@ router = APIRouter(
     prefix="/reviews",
     tags=["reviews"]
 )
+
+_MAX_LIMIT = 100
 
 
 @router.post("/", response_model=ReviewResponse)
@@ -60,14 +63,51 @@ def create_review(
     return _attach_user_name(new_review, db)
 
 
+@router.get("/organization/{organization_id}/stats")
+def get_review_stats(
+    organization_id: int,
+    db: Session = Depends(get_db),
+):
+    """Return total count and average rating for all active reviews.
+    Computed over every active review — not bounded by any pagination limit.
+    """
+    agg = (
+        db.query(
+            func.count(Review.id).label("total"),
+            func.avg(Review.rating).label("avg_rating"),
+        )
+        .filter(
+            Review.organization_id == organization_id,
+            Review.status == "active",
+        )
+        .first()
+    )
+    total: int = agg.total if agg else 0
+    average_rating: Optional[float] = (
+        round(float(agg.avg_rating), 2) if agg and agg.avg_rating is not None else None
+    )
+    return {"total": total, "average_rating": average_rating}
+
+
 @router.get("/organization/{organization_id}", response_model=List[ReviewResponse])
 def get_reviews_by_org(
     organization_id: int,
-    db: Session = Depends(get_db)
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_db),
 ):
-    reviews = db.query(Review).filter(
-        Review.organization_id == organization_id
-    ).all()
+    limit = min(max(1, limit), _MAX_LIMIT)
+    reviews = (
+        db.query(Review)
+        .filter(
+            Review.organization_id == organization_id,
+            Review.status == "active",
+        )
+        .order_by(Review.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     return [_attach_user_name(r, db) for r in reviews]
 
 
