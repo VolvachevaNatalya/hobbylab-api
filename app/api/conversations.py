@@ -62,7 +62,7 @@ def get_user_conversations(
 
     owned_org_ids = db.query(OrganizationUser.organization_id).filter(
         OrganizationUser.user_id == current_user.id
-    ).subquery()
+    ).scalar_subquery()
 
     conversations = (
         db.query(Conversation)

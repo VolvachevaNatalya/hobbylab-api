@@ -44,7 +44,7 @@ with engine.connect() as _conn:
     ))
     _conn.commit()
 
-app = FastAPI(swagger_ui_parameters={"persistAuthorization": True})
+app = FastAPI()
 
 
 
