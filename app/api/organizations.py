@@ -51,6 +51,8 @@ def _get_optional_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user or user.status != "active":
         return None
+    if payload.get("tv", 0) != (user.token_version or 0):
+        return None
     return user
 
 

@@ -100,18 +100,10 @@ class OrganizationUpdate(BaseModel):
     city_id: Optional[int] = None
     latitude: Optional[Decimal] = None
     longitude: Optional[Decimal] = None
-    status: Optional[str] = None
     trial_lesson_available: Optional[bool] = None
     trial_lesson_price: Optional[float] = None
     trial_lesson_comment: Optional[str] = None
     category_ids: Optional[List[int]] = None
-
-    @field_validator("status")
-    @classmethod
-    def validate_status(cls, v):
-        if v is not None and v not in ALLOWED_STATUSES:
-            raise ValueError(f"status must be one of: {', '.join(sorted(ALLOWED_STATUSES))}")
-        return v
 
     @field_validator("category_ids")
     @classmethod
@@ -184,11 +176,20 @@ class AdminOrganizationUpdate(OrganizationUpdate):
     """Extends OrganizationUpdate with admin-only fields.
 
     Adds:
+    - status: org owners cannot change moderation status; only system admins can
     - verified: org owners cannot set this; only system admins can
     Protects:
     - name cannot be explicitly nulled (Organization.name is NOT NULL)
     """
+    status: Optional[str] = None
     verified: Optional[bool] = None
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v):
+        if v is not None and v not in ALLOWED_STATUSES:
+            raise ValueError(f"status must be one of: {', '.join(sorted(ALLOWED_STATUSES))}")
+        return v
 
     @model_validator(mode='after')
     def name_not_null(self):
