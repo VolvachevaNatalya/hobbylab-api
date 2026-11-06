@@ -13,7 +13,6 @@ class ReviewCreate(BaseModel):
 class ReviewUpdate(BaseModel):
     rating: Optional[int] = Field(default=None, ge=1, le=5)
     comment: Optional[str] = None
-    status: Optional[str] = None
 
 
 class ReviewResponse(BaseModel):

@@ -42,6 +42,10 @@ with engine.connect() as _conn:
         "ALTER TABLE notifications "
         "ADD COLUMN IF NOT EXISTS conversation_id INTEGER REFERENCES conversations(id)"
     ))
+    _conn.execute(text(
+        "ALTER TABLE users "
+        "ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0"
+    ))
     _conn.commit()
 
 app = FastAPI()

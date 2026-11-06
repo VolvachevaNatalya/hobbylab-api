@@ -34,6 +34,13 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         raise HTTPException(status_code=401, detail="User not found")
     if user.status != "active":
         raise HTTPException(status_code=403, detail="Account is not active")
+    # Verify token version: tokens issued before a password change carry an
+    # older "tv" value and must be rejected immediately, without waiting for
+    # their natural expiry.  Tokens without a "tv" claim (issued before this
+    # check was added) default to 0 and remain valid as long as the user has
+    # never changed their password (token_version is also 0).
+    if payload.get("tv", 0) != (user.token_version or 0):
+        raise HTTPException(status_code=401, detail="Invalid token")
 
     return user
 
@@ -58,6 +65,8 @@ def decode_refresh_token(token: str, db: Session) -> User:
         raise HTTPException(status_code=401, detail="Invalid token")
     if user.status != "active":
         raise HTTPException(status_code=403, detail="Account is not active")
+    if payload.get("tv", 0) != (user.token_version or 0):
+        raise HTTPException(status_code=401, detail="Invalid token")
 
     return user
 

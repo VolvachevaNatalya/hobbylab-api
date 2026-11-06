@@ -119,6 +119,25 @@ def reset_db():
     Base.metadata.drop_all(bind=TEST_ENGINE)
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limits():
+    """Clear all in-process rate limit buckets between tests.
+
+    Rate limit dicts are module-level singletons that survive across test
+    functions.  Without this, accumulated counts from earlier tests cause
+    later tests that never set a custom X-Real-IP to get 429 instead of
+    their expected response code.
+    """
+    from app.api.auth import _login_attempts, _reg_attempts, _refresh_attempts
+    _login_attempts.clear()
+    _reg_attempts.clear()
+    _refresh_attempts.clear()
+    yield
+    _login_attempts.clear()
+    _reg_attempts.clear()
+    _refresh_attempts.clear()
+
+
 @pytest.fixture
 def db(reset_db):
     session = TestingSessionLocal()

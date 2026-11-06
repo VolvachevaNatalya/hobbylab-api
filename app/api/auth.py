@@ -30,17 +30,31 @@ _reg_attempts: Dict[str, List[datetime]] = defaultdict(list)
 _reg_lock = threading.Lock()
 
 # --- In-process IP-based rate limiter for login and OAuth login endpoints ---
-# All four token-issuance endpoints share one bucket so that an attacker cannot
-# circumvent the limit by alternating between them.
+# Login attempts share one tight bucket (password-guessing prevention).
 _LOGIN_RATE_LIMIT = 10
 _LOGIN_RATE_WINDOW = timedelta(minutes=15)
 
 _login_attempts: Dict[str, List[datetime]] = defaultdict(list)
 _login_lock = threading.Lock()
 
+# --- In-process IP-based rate limiter for POST /auth/refresh ---
+# Separate, more lenient bucket: refresh is auto-triggered by the app (not a
+# user action) and multiple users behind the same NAT legitimately refresh at
+# the same time when their 60-minute tokens expire simultaneously.
+_REFRESH_RATE_LIMIT = 30
+_REFRESH_RATE_WINDOW = timedelta(minutes=15)
+
+_refresh_attempts: Dict[str, List[datetime]] = defaultdict(list)
+_refresh_lock = threading.Lock()
+
 
 def _get_client_ip(request: Request) -> str:
-    # Railway sets X-Real-IP to the original client IP.
+    # Railway's routing layer sets X-Real-IP to the actual client IP before
+    # forwarding the request to the dyno.  The dyno port is not publicly
+    # reachable, so only Railway's proxy can set this header in production.
+    # Trusting it without an explicit allowlist is acceptable for a Railway
+    # single-dyno deployment; revisit if the app is ever exposed via a
+    # different ingress path.
     real_ip = request.headers.get("X-Real-IP")
     if real_ip:
         return real_ip.strip()
@@ -78,6 +92,23 @@ def _check_login_rate_limit(ip: str) -> None:
             )
         recent.append(now)
         _login_attempts[ip] = recent
+
+
+def _check_refresh_rate_limit(ip: str) -> None:
+    now = datetime.utcnow()
+    cutoff = now - _REFRESH_RATE_WINDOW
+    with _refresh_lock:
+        recent = [t for t in _refresh_attempts[ip] if t > cutoff]
+        if len(recent) >= _REFRESH_RATE_LIMIT:
+            oldest = min(recent)
+            retry_after = max(1, int((oldest + _REFRESH_RATE_WINDOW - now).total_seconds()) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="Too many refresh attempts. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        recent.append(now)
+        _refresh_attempts[ip] = recent
 
 
 class GoogleLoginRequest(BaseModel):
@@ -120,20 +151,23 @@ def login(
     if user.status != "active":
         raise HTTPException(status_code=403, detail="Account is not active")
 
+    tv = user.token_version or 0
     return {
-        "access_token": create_access_token({"user_id": user.id}),
-        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "access_token": create_access_token({"user_id": user.id, "tv": tv}),
+        "refresh_token": create_refresh_token({"user_id": user.id, "tv": tv}),
         "token_type": "bearer",
     }
 
 
 @router.post("/auth/refresh")
-def refresh_tokens(payload: RefreshRequest, db: Session = Depends(get_db)):
+def refresh_tokens(request: Request, payload: RefreshRequest, db: Session = Depends(get_db)):
     """Exchange a valid refresh token for a new access token and rotated refresh token."""
+    _check_refresh_rate_limit(_get_client_ip(request))
     user = decode_refresh_token(payload.refresh_token, db)
+    tv = user.token_version or 0
     return {
-        "access_token": create_access_token({"user_id": user.id}),
-        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "access_token": create_access_token({"user_id": user.id, "tv": tv}),
+        "refresh_token": create_refresh_token({"user_id": user.id, "tv": tv}),
         "token_type": "bearer",
     }
 
@@ -195,7 +229,8 @@ def google_login(request: Request, payload: GoogleLoginRequest, db: Session = De
             client_ids,
         )
     except ValueError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid Google token: {e}")
+        logger.warning("google_token_validation_failed | ip=%s | error=%s", ip, e)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     email: str = id_info.get("email", "")
     name: str = id_info.get("name") or email.split("@")[0]
@@ -221,9 +256,10 @@ def google_login(request: Request, payload: GoogleLoginRequest, db: Session = De
     if user.status != "active":
         raise HTTPException(status_code=403, detail="Account is not active")
 
+    tv = user.token_version or 0
     return {
-        "access_token": create_access_token({"user_id": user.id}),
-        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "access_token": create_access_token({"user_id": user.id, "tv": tv}),
+        "refresh_token": create_refresh_token({"user_id": user.id, "tv": tv}),
         "token_type": "bearer",
     }
 
@@ -242,7 +278,8 @@ def facebook_login(request: Request, payload: FacebookLoginRequest, db: Session 
             timeout=10,
         )
     except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Could not reach Facebook API: {e}")
+        logger.warning("facebook_api_unreachable | ip=%s | error=%s", ip, e)
+        raise HTTPException(status_code=502, detail="Could not reach Facebook API")
 
     if response.status_code != 200:
         raise HTTPException(status_code=401, detail="Invalid Facebook access token")
@@ -290,9 +327,10 @@ def facebook_login(request: Request, payload: FacebookLoginRequest, db: Session 
     if user.status != "active":
         raise HTTPException(status_code=403, detail="Account is not active")
 
+    tv = user.token_version or 0
     return {
-        "access_token": create_access_token({"user_id": user.id}),
-        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "access_token": create_access_token({"user_id": user.id, "tv": tv}),
+        "refresh_token": create_refresh_token({"user_id": user.id, "tv": tv}),
         "token_type": "bearer",
     }
 
@@ -312,7 +350,8 @@ def apple_login(request: Request, payload: AppleLoginRequest, db: Session = Depe
     try:
         jwks_response = httpx.get(APPLE_JWKS_URL, timeout=10)
     except httpx.RequestError as e:
-        raise HTTPException(status_code=502, detail=f"Could not reach Apple JWKS endpoint: {e}")
+        logger.warning("apple_jwks_unreachable | ip=%s | error=%s", ip, e)
+        raise HTTPException(status_code=502, detail="Could not reach Apple authentication service")
 
     if jwks_response.status_code != 200:
         raise HTTPException(status_code=502, detail="Failed to fetch Apple public keys")
@@ -328,7 +367,8 @@ def apple_login(request: Request, payload: AppleLoginRequest, db: Session = Depe
             issuer=APPLE_ISSUER,
         )
     except JWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid Apple token: {e}")
+        logger.warning("apple_token_validation_failed | ip=%s | error=%s", ip, e)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
 
     apple_sub: str = claims.get("sub", "")
     email: str = claims.get("email", "")
@@ -370,9 +410,10 @@ def apple_login(request: Request, payload: AppleLoginRequest, db: Session = Depe
     if user.status != "active":
         raise HTTPException(status_code=403, detail="Account is not active")
 
+    tv = user.token_version or 0
     return {
-        "access_token": create_access_token({"user_id": user.id}),
-        "refresh_token": create_refresh_token({"user_id": user.id}),
+        "access_token": create_access_token({"user_id": user.id, "tv": tv}),
+        "refresh_token": create_refresh_token({"user_id": user.id, "tv": tv}),
         "token_type": "bearer",
     }
 
@@ -390,5 +431,6 @@ def change_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
     current_user.password_hash = hash_password(payload.new_password)
+    current_user.token_version = (current_user.token_version or 0) + 1
     db.commit()
     return {"message": "Password changed successfully"}

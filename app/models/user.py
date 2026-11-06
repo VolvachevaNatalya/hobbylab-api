@@ -24,3 +24,8 @@ class User(Base):
     status = Column(String(50), default="active")
 
     is_system_admin = Column(Boolean, nullable=False, default=False, server_default="false")
+
+    # Incremented on every password change.  JWTs carry a matching "tv" claim
+    # so that tokens issued before a password change are rejected immediately,
+    # even if they have not yet expired.
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
