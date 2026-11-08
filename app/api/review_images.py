@@ -34,6 +34,10 @@ def create_review_image(
 
     _require_review_owner(review, current_user)
 
+    existing_count = db.query(ReviewImage).filter(ReviewImage.review_id == image.review_id).count()
+    if existing_count >= 5:
+        raise HTTPException(status_code=400, detail="Maximum 5 images per review")
+
     new_image = ReviewImage(**image.model_dump())
     db.add(new_image)
     db.commit()

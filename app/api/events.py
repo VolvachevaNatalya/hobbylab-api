@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from dateutil.tz import gettz as _gettz
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, case, exists, func, or_
 from sqlalchemy.orm import Session
 
@@ -1160,6 +1160,7 @@ def get_events(
     user_longitude: Optional[float] = None,
     radius_km: float = 25,
     include_past: bool = False,
+    limit: int = Query(default=500, ge=1, le=1000),
     db: Session = Depends(get_db),
 ):
     cat_filter = _category_filter(category_id)
@@ -1191,6 +1192,7 @@ def get_events(
             .group_by(Event.id)
             .order_by(best_rank.desc(), func.coalesce(dist, 9999.0).asc())
         )
+        query = query.filter(Event.status != "cancelled")
         if organization_id is not None:
             query = query.filter(Event.organization_id == organization_id)
         if series_id is not None:
@@ -1216,7 +1218,7 @@ def get_events(
                 )
             )
 
-        rows = query.all()
+        rows = query.limit(limit).all()
         cities = _city_map([ev.city_id for ev, _, _ in rows], db)
         smap = _series_map([ev.series_id for ev, _, _ in rows], db)
         out = []
@@ -1229,6 +1231,7 @@ def get_events(
         return out
 
     query = db.query(Event)
+    query = query.filter(Event.status != "cancelled")
     if organization_id is not None:
         query = query.filter(Event.organization_id == organization_id)
     if series_id is not None:
@@ -1250,7 +1253,7 @@ def get_events(
                 and_(Event.end_datetime.is_(None), Event.start_datetime >= _today_start_local()),
             )
         )
-    events = query.order_by(Event.start_datetime.asc()).all()
+    events = query.order_by(Event.start_datetime.asc()).limit(limit).all()
     cities = _city_map([ev.city_id for ev in events], db)
     smap = _series_map([ev.series_id for ev in events], db)
     return [_enrich(e, db, city_map=cities, series_map=smap) for e in events]

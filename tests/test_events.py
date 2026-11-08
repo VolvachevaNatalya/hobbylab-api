@@ -300,6 +300,35 @@ def test_list_events_includes_categories(client, db):
     assert data[0]["categories"][0]["name"] == "Swimming"
 
 
+def test_list_events_excludes_cancelled(client, db):
+    """H2: GET /events/ must not return cancelled events."""
+    org = _make_org(db)
+    cat = _make_category(db, "Sport")
+
+    active_ev = Event(
+        organization_id=org.id,
+        title="Active Event",
+        start_datetime=datetime(2099, 6, 1, 10, 0),
+        status="active",
+        is_nationwide=True,
+    )
+    cancelled_ev = Event(
+        organization_id=org.id,
+        title="Cancelled Event",
+        start_datetime=datetime(2099, 6, 1, 10, 0),
+        status="cancelled",
+        is_nationwide=True,
+    )
+    db.add_all([active_ev, cancelled_ev])
+    db.commit()
+
+    resp = client.get("/events/", params={"organization_id": org.id})
+    assert resp.status_code == 200
+    titles = {e["title"] for e in resp.json()}
+    assert "Active Event" in titles
+    assert "Cancelled Event" not in titles
+
+
 # ── UPDATE ────────────────────────────────────────────────────────────────────
 
 def test_update_event_replaces_categories(client, db):

@@ -7,6 +7,12 @@ from sqlalchemy import distinct, func, or_
 from sqlalchemy.orm import Session
 
 from app.api.events import _do_create_event, _do_delete_event, _do_update_event, _enrich
+from app.core.event_notifications import (
+    has_meaningful_change,
+    notify_event_cancelled,
+    notify_event_updated,
+    notify_new_event,
+)
 from app.api.organizations import (
     _category_map,
     _city_fields,
@@ -471,6 +477,7 @@ def admin_list_events(
 def admin_create_event(
     event: EventCreate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_system_admin),
 ):
     org = db.query(Organization).filter(Organization.id == event.organization_id).first()
     if not org:
@@ -484,6 +491,8 @@ def admin_create_event(
         event_data["age_groups"] = json.dumps(event_data["age_groups"])
 
     new_event = _do_create_event(event_data, category_ids, recurrence, db)
+    notify_new_event(new_event.id, new_event.title, org.id, org.name, current_user.id, db)
+    db.commit()
     return _enrich(new_event, db)
 
 
@@ -504,6 +513,7 @@ def admin_update_event(
     event_update: EventUpdate,
     scope: str = "single",
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_system_admin),
 ):
     if scope not in ("single", "future", "series"):
         raise HTTPException(status_code=400, detail="scope must be single, future, or series")
@@ -522,7 +532,23 @@ def admin_update_event(
     if isinstance(update_data.get("age_groups"), list):
         update_data["age_groups"] = json.dumps(update_data["age_groups"])
 
-    return _do_update_event(event, update_data, category_ids, recurrence, remove_recurrence, scope, db)
+    original_id = event.id
+    original_title = event.title
+    original_status = event.status
+
+    is_cancellation = update_data.get("status") == "cancelled" and original_status != "cancelled"
+    needs_update_notify = not is_cancellation and has_meaningful_change(event, update_data)
+
+    result = _do_update_event(event, update_data, category_ids, recurrence, remove_recurrence, scope, db)
+
+    if is_cancellation:
+        notify_event_cancelled(original_id, original_title, current_user.id, db)
+        db.commit()
+    elif needs_update_notify:
+        notify_event_updated(original_id, original_title, current_user.id, db)
+        db.commit()
+
+    return result
 
 
 @router.delete("/events/{event_id}")

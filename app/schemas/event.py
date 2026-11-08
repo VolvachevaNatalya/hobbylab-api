@@ -200,6 +200,13 @@ class EventUpdate(BaseModel):
     is_nationwide: Optional[bool] = None
     status: Optional[str] = None
     price: Optional[float] = None
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("active", "cancelled"):
+            raise ValueError("status must be 'active' or 'cancelled'")
+        return v
     price_comment: Optional[str] = None
     category_ids: Optional[List[int]] = None
     recurrence: Optional[RecurrenceCreate] = None

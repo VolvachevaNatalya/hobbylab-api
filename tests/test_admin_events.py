@@ -6,6 +6,7 @@ from app.models.category import Category
 from app.models.event import Event
 from app.models.event_category import EventCategory
 from app.models.event_series import EventSeries
+from app.models.favorite import Favorite
 from app.models.notification import Notification
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
@@ -548,7 +549,7 @@ def test_admin_create_event_multiple_categories(client, db):
     assert names == {"Dance", "Music"}
 
 
-def test_admin_create_event_no_notifications_sent(client, db):
+def test_admin_create_event_no_notifications_when_no_org_favorites(client, db):
     admin = _make_user(db, "ce_notif@x.com", is_system_admin=True)
     org = _make_org(db)
     cat = _make_category(db)
@@ -862,7 +863,7 @@ def test_admin_patch_event_recurring_scope_series(client, db):
         assert updated.title == "All Updated"
 
 
-def test_admin_patch_event_no_notifications_sent(client, db):
+def test_admin_patch_event_no_notifications_when_no_event_favorites(client, db):
     admin = _make_user(db, "pe_notif@x.com", is_system_admin=True)
     org = _make_org(db)
     cat = _make_category(db)
@@ -1016,3 +1017,120 @@ def test_admin_delete_event_scope_future_all_gone_deletes_series(client, db):
                          headers=_auth(admin.id))
     assert resp.status_code == 200
     assert db.query(EventSeries).filter(EventSeries.id == sid).first() is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Notification regression tests (C1, M1, M2)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _favor(db, user_id, entity_type, entity_id):
+    f = Favorite(user_id=user_id, entity_type=entity_type, entity_id=entity_id)
+    db.add(f)
+    db.commit()
+    return f
+
+
+def _notifications_for(db, user_id, notif_type):
+    db.expire_all()
+    from app.models.notification import Notification as N
+    return db.query(N).filter(N.user_id == user_id, N.type == notif_type).all()
+
+
+def test_admin_create_event_notifies_org_favorers(client, db):
+    """M1: org followers receive a new_event notification when admin creates an event."""
+    admin = _make_user(db, "m1_admin@x.com", is_system_admin=True)
+    follower = _make_user(db, "m1_follower@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    _favor(db, follower.id, "organization", org.id)
+
+    resp = client.post("/admin/events", json=_event_body(org.id, [cat.id]),
+                       headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+    notifs = _notifications_for(db, follower.id, "new_event")
+    assert len(notifs) == 1
+
+
+def test_admin_create_event_admin_not_self_notified(client, db):
+    """M1: admin does not receive a new_event notification for their own creation."""
+    admin = _make_user(db, "m1_selfnotif@x.com", is_system_admin=True)
+    org = _make_org(db)
+    cat = _make_category(db)
+    _favor(db, admin.id, "organization", org.id)
+
+    client.post("/admin/events", json=_event_body(org.id, [cat.id]),
+                headers=_auth(admin.id))
+
+    notifs = _notifications_for(db, admin.id, "new_event")
+    assert len(notifs) == 0
+
+
+def test_admin_patch_event_cancellation_notifies_event_favorers(client, db):
+    """C1: event favorers receive an event_cancelled notification when admin cancels an event."""
+    admin = _make_user(db, "c1_admin@x.com", is_system_admin=True)
+    follower = _make_user(db, "c1_follower@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    _favor(db, follower.id, "event", event.id)
+
+    resp = client.patch(f"/admin/events/{event.id}", json={"status": "cancelled"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+    notifs = _notifications_for(db, follower.id, "event_cancelled")
+    assert len(notifs) == 1
+
+
+def test_admin_patch_event_already_cancelled_no_duplicate_notification(client, db):
+    """C1: cancelling an already-cancelled event does not send a duplicate notification."""
+    admin = _make_user(db, "c1_dup_admin@x.com", is_system_admin=True)
+    follower = _make_user(db, "c1_dup_follower@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id, status="cancelled")
+    _favor(db, follower.id, "event", event.id)
+
+    resp = client.patch(f"/admin/events/{event.id}", json={"status": "cancelled"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+    notifs = _notifications_for(db, follower.id, "event_cancelled")
+    assert len(notifs) == 0
+
+
+def test_admin_patch_event_meaningful_update_notifies_event_favorers(client, db):
+    """M2: event favorers receive an event_updated notification on a meaningful field change."""
+    admin = _make_user(db, "m2_admin@x.com", is_system_admin=True)
+    follower = _make_user(db, "m2_follower@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    _favor(db, follower.id, "event", event.id)
+
+    resp = client.patch(f"/admin/events/{event.id}",
+                        json={"start_datetime": "2099-02-01T10:00:00"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+    notifs = _notifications_for(db, follower.id, "event_updated")
+    assert len(notifs) == 1
+
+
+def test_admin_patch_event_nonmeaningful_update_no_notification(client, db):
+    """M2: non-meaningful field changes (e.g. image_url) do not trigger event_updated."""
+    admin = _make_user(db, "m2_nm_admin@x.com", is_system_admin=True)
+    follower = _make_user(db, "m2_nm_follower@x.com")
+    org = _make_org(db)
+    cat = _make_category(db)
+    event = _make_event(db, org.id, cat_id=cat.id)
+    _favor(db, follower.id, "event", event.id)
+
+    resp = client.patch(f"/admin/events/{event.id}",
+                        json={"image_url": "https://example.com/img.jpg"},
+                        headers=_auth(admin.id))
+    assert resp.status_code == 200
+
+    notifs = _notifications_for(db, follower.id, "event_updated")
+    assert len(notifs) == 0
