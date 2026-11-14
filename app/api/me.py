@@ -15,6 +15,20 @@ class UserUpdate(BaseModel):
     avatar_url: Optional[str] = None
 
 
+class NotificationPreferencesResponse(BaseModel):
+    notif_appointments: bool
+    notif_chat: bool
+    notif_activity: bool
+    notif_offers: bool
+
+
+class NotificationPreferencesUpdate(BaseModel):
+    notif_appointments: Optional[bool] = None
+    notif_chat: Optional[bool] = None
+    notif_activity: Optional[bool] = None
+    notif_offers: Optional[bool] = None
+
+
 def _is_fallback_email(user: User) -> bool:
     return user.provider == "facebook" and (user.email or "").endswith("@facebook.local")
 
@@ -59,3 +73,37 @@ def update_me(
         "status": current_user.status,
         "created_at": current_user.created_at,
     }
+
+
+@router.get("/me/notification-preferences", response_model=NotificationPreferencesResponse)
+def get_notification_preferences(current_user: User = Depends(get_current_user)):
+    return NotificationPreferencesResponse(
+        notif_appointments=current_user.notif_appointments if current_user.notif_appointments is not None else True,
+        notif_chat=current_user.notif_chat if current_user.notif_chat is not None else True,
+        notif_activity=current_user.notif_activity if current_user.notif_activity is not None else False,
+        notif_offers=current_user.notif_offers if current_user.notif_offers is not None else True,
+    )
+
+
+@router.put("/me/notification-preferences", response_model=NotificationPreferencesResponse)
+def update_notification_preferences(
+    body: NotificationPreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if body.notif_appointments is not None:
+        current_user.notif_appointments = body.notif_appointments
+    if body.notif_chat is not None:
+        current_user.notif_chat = body.notif_chat
+    if body.notif_activity is not None:
+        current_user.notif_activity = body.notif_activity
+    if body.notif_offers is not None:
+        current_user.notif_offers = body.notif_offers
+    db.commit()
+    db.refresh(current_user)
+    return NotificationPreferencesResponse(
+        notif_appointments=current_user.notif_appointments,
+        notif_chat=current_user.notif_chat,
+        notif_activity=current_user.notif_activity,
+        notif_offers=current_user.notif_offers,
+    )

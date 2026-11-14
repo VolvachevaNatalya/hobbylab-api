@@ -165,6 +165,8 @@ def search_classes(
     city_id: Optional[int] = None,
     city: Optional[str] = None,
     age: Optional[int] = None,
+    min_age: Optional[int] = None,
+    max_age: Optional[int] = None,
     day_of_week: Optional[int] = None,
 
     min_price: Optional[float] = None,
@@ -181,6 +183,9 @@ def search_classes(
     db: Session = Depends(get_db)
 ):
     limit = min(max(1, limit), _MAX_SEARCH_LIMIT)
+
+    if min_age is not None and max_age is not None and min_age > max_age:
+        raise HTTPException(status_code=422, detail="min_age must not be greater than max_age")
     query = db.query(
         Class,
         func.avg(Review.rating).label("rating"),
@@ -245,6 +250,11 @@ def search_classes(
             Group.age_from <= age,
             Group.age_to >= age
         )
+    if min_age is not None or max_age is not None:
+        if min_age is not None:
+            query = query.filter(Group.age_to >= min_age)
+        if max_age is not None:
+            query = query.filter(Group.age_from <= max_age)
     if day_of_week is not None:
         query = query.filter(GroupSchedule.day_of_week == day_of_week)
 

@@ -64,6 +64,7 @@ import app.models.organization_category      # noqa: F401
 import app.models.city                      # noqa: F401
 import app.models.event_series               # noqa: F401
 import app.models.support_request            # noqa: F401
+import app.models.password_reset_token       # noqa: F401
 
 app = FastAPI()
 app.include_router(admin_router)
@@ -128,14 +129,18 @@ def reset_rate_limits():
     later tests that never set a custom X-Real-IP to get 429 instead of
     their expected response code.
     """
-    from app.api.auth import _login_attempts, _reg_attempts, _refresh_attempts
+    from app.api.auth import _login_attempts, _reg_attempts, _refresh_attempts, _forgot_attempts, _reset_attempts
     _login_attempts.clear()
     _reg_attempts.clear()
     _refresh_attempts.clear()
+    _forgot_attempts.clear()
+    _reset_attempts.clear()
     yield
     _login_attempts.clear()
     _reg_attempts.clear()
     _refresh_attempts.clear()
+    _forgot_attempts.clear()
+    _reset_attempts.clear()
 
 
 @pytest.fixture

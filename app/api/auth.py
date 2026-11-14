@@ -1,5 +1,7 @@
+import hmac
 import logging
 import os
+import secrets
 import threading
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -10,7 +12,9 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.auth import decode_refresh_token, get_current_user
+from app.core.email import send_password_reset_otp
 from app.db.dependencies import get_db
+from app.models.password_reset_token import PasswordResetToken
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse
 from app.core.security import create_access_token, create_refresh_token, hash_password, verify_password
@@ -46,6 +50,51 @@ _REFRESH_RATE_WINDOW = timedelta(minutes=15)
 
 _refresh_attempts: Dict[str, List[datetime]] = defaultdict(list)
 _refresh_lock = threading.Lock()
+
+# --- In-process IP-based rate limiter for POST /auth/forgot-password ---
+# Tight limit: prevents OTP generation abuse and email flooding.
+_FORGOT_RATE_LIMIT = 3
+_FORGOT_RATE_WINDOW = timedelta(minutes=15)
+
+_forgot_attempts: Dict[str, List[datetime]] = defaultdict(list)
+_forgot_lock = threading.Lock()
+
+# --- In-process IP-based rate limiter for POST /auth/reset-password ---
+# Separate from the forgot-password bucket so that requesting the OTP
+# multiple times (e.g. waiting for a slow email) does not consume attempts
+# for actually applying the reset.  Still tight enough to block guessing.
+_RESET_RATE_LIMIT = 5
+_RESET_RATE_WINDOW = timedelta(minutes=15)
+
+_reset_attempts: Dict[str, List[datetime]] = defaultdict(list)
+_reset_lock = threading.Lock()
+
+_OTP_TTL = timedelta(minutes=15)
+
+# Per-token wrong-guess limit stored in DB — cannot be bypassed by rotating
+# IPs or restarting backend workers.  Only the reset challenge is locked;
+# normal login is completely unaffected.
+_MAX_OTP_ATTEMPTS = 10
+
+# Maximum new reset tokens issued per account per hour.  Tokens are soft-
+# expired (not deleted) so the hourly count accumulates across requests.
+_OTP_HOURLY_ISSUANCE = 5
+
+# HMAC key for OTP hashing.  A short-lived 6-digit OTP has only 10^6 possible
+# values, so a plain SHA-256 is reversible in <1 ms if the token table is ever
+# exfiltrated.  Keying the hash with a server secret makes it irreversible
+# without the key even with a full DB dump.
+#
+# Set OTP_HMAC_KEY in production (high-entropy random string, separate from the
+# JWT secret).  Falls back to JWT_SECRET so the app starts without extra config.
+_OTP_HMAC_KEY: bytes = (
+    os.getenv("OTP_HMAC_KEY") or os.getenv("JWT_SECRET", "change-me-in-production")
+).encode()
+
+
+def _hash_otp(otp: str) -> str:
+    """HMAC-SHA256 of *otp* under the server secret key."""
+    return hmac.new(_OTP_HMAC_KEY, otp.encode(), "sha256").hexdigest()
 
 
 def _get_client_ip(request: Request) -> str:
@@ -94,6 +143,40 @@ def _check_login_rate_limit(ip: str) -> None:
         _login_attempts[ip] = recent
 
 
+def _check_forgot_rate_limit(ip: str) -> None:
+    now = datetime.utcnow()
+    cutoff = now - _FORGOT_RATE_WINDOW
+    with _forgot_lock:
+        recent = [t for t in _forgot_attempts[ip] if t > cutoff]
+        if len(recent) >= _FORGOT_RATE_LIMIT:
+            oldest = min(recent)
+            retry_after = max(1, int((oldest + _FORGOT_RATE_WINDOW - now).total_seconds()) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="Too many reset attempts. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        recent.append(now)
+        _forgot_attempts[ip] = recent
+
+
+def _check_reset_rate_limit(ip: str) -> None:
+    now = datetime.utcnow()
+    cutoff = now - _RESET_RATE_WINDOW
+    with _reset_lock:
+        recent = [t for t in _reset_attempts[ip] if t > cutoff]
+        if len(recent) >= _RESET_RATE_LIMIT:
+            oldest = min(recent)
+            retry_after = max(1, int((oldest + _RESET_RATE_WINDOW - now).total_seconds()) + 1)
+            raise HTTPException(
+                status_code=429,
+                detail="Too many reset attempts. Try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        recent.append(now)
+        _reset_attempts[ip] = recent
+
+
 def _check_refresh_rate_limit(ip: str) -> None:
     now = datetime.utcnow()
     cutoff = now - _REFRESH_RATE_WINDOW
@@ -130,6 +213,16 @@ class ChangePasswordRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    otp: str
+    new_password: str
 
 
 @router.post("/auth/login")
@@ -434,3 +527,139 @@ def change_password(
     current_user.token_version = (current_user.token_version or 0) + 1
     db.commit()
     return {"message": "Password changed successfully"}
+
+
+@router.post("/auth/forgot-password")
+def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Request a password-reset OTP.
+
+    Always returns 200 regardless of whether the email exists so that callers
+    cannot enumerate registered accounts by observing different responses.
+    The OTP is delivered by email when SMTP is configured; without SMTP the
+    token is still stored in the database but no message is sent.
+    """
+    ip = _get_client_ip(request)
+    _check_forgot_rate_limit(ip)
+
+    email = payload.email.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+
+    if user and user.status == "active":
+        now = datetime.utcnow()
+        hour_ago = now - timedelta(hours=1)
+
+        # Serialize concurrent requests for the same user via a row-level lock.
+        #
+        # Without this, two concurrent transactions can both read the same
+        # stale hourly count (READ COMMITTED snapshot), both pass the < limit
+        # check, and both insert — leaving the hourly cap exceeded AND two
+        # simultaneously active tokens.  The double-token problem arises because
+        # the second transaction's soft-expire UPDATE runs after the first has
+        # committed its new token, but the UPDATE only sees rows that existed
+        # at statement-start (PostgreSQL READ COMMITTED), so it misses the
+        # first transaction's freshly inserted token.
+        #
+        # SELECT … FOR UPDATE acquires an exclusive row lock on the user row.
+        # The second concurrent transaction blocks here until the first commits,
+        # then re-reads a current count — preventing both overruns.
+        #
+        # SQLAlchemy silently drops FOR UPDATE on SQLite, which is safe because
+        # the test pool (StaticPool) uses a single connection.
+        db.query(User).filter(User.id == user.id).with_for_update().first()
+
+        # Per-account hourly issuance limit (IP-resistant).
+        # Tokens are soft-expired rather than deleted so this count accumulates
+        # across requests and cannot be reset by an attacker rotating IPs.
+        recent_count = db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.created_at > hour_ago,
+        ).count()
+
+        if recent_count < _OTP_HOURLY_ISSUANCE:
+            # Soft-expire (do not delete) any currently active token so the
+            # created_at history needed for the hourly count stays in the DB.
+            db.query(PasswordResetToken).filter(
+                PasswordResetToken.user_id == user.id,
+                PasswordResetToken.used_at.is_(None),
+                PasswordResetToken.expires_at > now,
+            ).update({"expires_at": now}, synchronize_session="evaluate")
+            db.flush()
+
+            otp = f"{secrets.randbelow(10 ** 6):06d}"
+            otp_hash = _hash_otp(otp)
+            token_row = PasswordResetToken(
+                user_id=user.id,
+                otp_hash=otp_hash,
+                expires_at=now + _OTP_TTL,
+            )
+            db.add(token_row)
+            db.commit()
+
+            # Fire-and-forget: errors are logged inside send_password_reset_otp.
+            send_password_reset_otp(user.email, otp)
+        # else: silently refuse — same 200 response (enumeration prevention).
+
+    # Always return the same response — do not reveal whether the email exists.
+    return {"message": "If that email is registered, a reset code has been sent."}
+
+
+@router.post("/auth/reset-password")
+def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Apply a password reset using an OTP from /auth/forgot-password."""
+    _check_reset_rate_limit(_get_client_ip(request))
+
+    if len(payload.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+
+    email = payload.email.strip().lower()
+    user = db.query(User).filter(User.email == email).first()
+    if not user or user.status != "active":
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+
+    otp_hash = _hash_otp(payload.otp.strip())
+    now = datetime.utcnow()
+
+    # Atomic consume: a single UPDATE avoids the TOCTOU race where two
+    # concurrent requests both pass a SELECT … WHERE used_at IS NULL check
+    # before either commits.  Only one transaction can update a given row;
+    # the other gets rowcount=0 and is rejected.
+    # failed_attempts < _MAX_OTP_ATTEMPTS gates access so a locked token
+    # cannot be consumed even with the correct OTP — IP rotation is irrelevant.
+    rowcount = (
+        db.query(PasswordResetToken)
+        .filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.otp_hash == otp_hash,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > now,
+            PasswordResetToken.failed_attempts < _MAX_OTP_ATTEMPTS,
+        )
+        .update({"used_at": now}, synchronize_session="evaluate")
+    )
+
+    if rowcount == 0:
+        # Atomically increment failed_attempts on the still-active, still-
+        # unlocked token.  The WHERE clause caps the counter at _MAX_OTP_ATTEMPTS
+        # so it never overshoots even under concurrent requests.
+        db.query(PasswordResetToken).filter(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+            PasswordResetToken.expires_at > now,
+            PasswordResetToken.failed_attempts < _MAX_OTP_ATTEMPTS,
+        ).update(
+            {"failed_attempts": PasswordResetToken.failed_attempts + 1},
+            synchronize_session="evaluate",
+        )
+        db.commit()  # Must commit before raising; the exception rolls back otherwise.
+        logger.warning(
+            "password_reset_invalid_otp | ip=%s | user_id=%s",
+            _get_client_ip(request), user.id,
+        )
+        raise HTTPException(status_code=400, detail="Invalid or expired code")
+
+    user.password_hash = hash_password(payload.new_password)
+    user.token_version = (user.token_version or 0) + 1
+    db.commit()
+
+    logger.info("password_reset_success | user_id=%s", user.id)
+    return {"message": "Password reset successfully"}

@@ -34,6 +34,7 @@ from app.models.event_category import EventCategory  # noqa: F401 – ensures ta
 from app.models.organization_category import OrganizationCategory  # noqa: F401 – ensures table is created
 from app.models.city import City  # noqa: F401 – ensures table is created
 from app.models.event_series import EventSeries  # noqa: F401 – ensures table is created
+from app.models.password_reset_token import PasswordResetToken  # noqa: F401 – ensures table is created
 Base.metadata.create_all(bind=engine)
 
 # Add columns introduced after initial schema creation
@@ -45,6 +46,22 @@ with engine.connect() as _conn:
     _conn.execute(text(
         "ALTER TABLE users "
         "ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0"
+    ))
+    _conn.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS notif_appointments BOOLEAN NOT NULL DEFAULT TRUE"
+    ))
+    _conn.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS notif_chat BOOLEAN NOT NULL DEFAULT TRUE"
+    ))
+    _conn.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS notif_activity BOOLEAN NOT NULL DEFAULT FALSE"
+    ))
+    _conn.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS notif_offers BOOLEAN NOT NULL DEFAULT TRUE"
+    ))
+    _conn.execute(text(
+        "ALTER TABLE password_reset_tokens "
+        "ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0"
     ))
     _conn.commit()
 

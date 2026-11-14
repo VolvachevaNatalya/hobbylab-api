@@ -29,3 +29,9 @@ class User(Base):
     # so that tokens issued before a password change are rejected immediately,
     # even if they have not yet expired.
     token_version = Column(Integer, nullable=False, default=0, server_default="0")
+
+    # Per-user notification preferences (used by the mobile app settings screen).
+    notif_appointments = Column(Boolean, nullable=False, default=True, server_default="true")
+    notif_chat = Column(Boolean, nullable=False, default=True, server_default="true")
+    notif_activity = Column(Boolean, nullable=False, default=False, server_default="false")
+    notif_offers = Column(Boolean, nullable=False, default=True, server_default="true")
