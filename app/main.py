@@ -1,6 +1,9 @@
+import logging
 from fastapi import FastAPI
 from sqlalchemy import text
 from app.db.database import engine
+
+_logger = logging.getLogger(__name__)
 from app.api.auth import router as auth_router
 from app.api.me import router as me_router
 from app.api.organizations import router as organization_router
@@ -25,8 +28,10 @@ from app.api.organization_members import router as organization_members_router
 from app.api.cities import router as cities_router
 from app.api.upload import router as upload_router
 from app.api.support import router as support_router
+from app.api.providers import router as providers_router
 from app.db.database import Base
 from app.models import *
+from app.models.user_auth_provider import UserAuthProvider  # noqa: F401 – ensures table is created
 from app.models.organization_photo import OrganizationPhoto  # noqa: F401 – ensures table is created
 from app.models.organization_invite_code import OrganizationInviteCode  # noqa: F401 – ensures table is created
 from app.models.organization_join_request import OrganizationJoinRequest  # noqa: F401 – ensures table is created
@@ -34,7 +39,6 @@ from app.models.event_category import EventCategory  # noqa: F401 – ensures ta
 from app.models.organization_category import OrganizationCategory  # noqa: F401 – ensures table is created
 from app.models.city import City  # noqa: F401 – ensures table is created
 from app.models.event_series import EventSeries  # noqa: F401 – ensures table is created
-from app.models.password_reset_token import PasswordResetToken  # noqa: F401 – ensures table is created
 Base.metadata.create_all(bind=engine)
 
 # Add columns introduced after initial schema creation
@@ -60,9 +64,50 @@ with engine.connect() as _conn:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS notif_offers BOOLEAN NOT NULL DEFAULT TRUE"
     ))
     _conn.execute(text(
-        "ALTER TABLE password_reset_tokens "
-        "ADD COLUMN IF NOT EXISTS failed_attempts INTEGER NOT NULL DEFAULT 0"
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS provider VARCHAR(50)"
     ))
+    _conn.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS provider_user_id VARCHAR(255)"
+    ))
+    _conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS user_auth_providers (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            provider VARCHAR NOT NULL,
+            provider_user_id VARCHAR NOT NULL,
+            provider_email VARCHAR,
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            CONSTRAINT uq_provider_user_id UNIQUE (provider, provider_user_id),
+            CONSTRAINT uq_user_provider UNIQUE (user_id, provider)
+        )
+    """))
+    # Detect conflicting legacy identities before migrating (non-destructive: log only)
+    _conflicts = _conn.execute(text("""
+        SELECT u.id, u.email, u.provider, u.provider_user_id
+        FROM users u
+        JOIN user_auth_providers uap
+          ON uap.provider = u.provider
+         AND uap.provider_user_id = u.provider_user_id
+         AND uap.user_id != u.id
+        WHERE u.password_hash IS NULL
+          AND u.provider IS NOT NULL
+          AND u.provider_user_id IS NOT NULL
+    """)).fetchall()
+    for _row in _conflicts:
+        _logger.warning(
+            "migration_identity_conflict | user_id=%s email=%s provider=%s provider_user_id=%s",
+            _row[0], _row[1], _row[2], _row[3],
+        )
+
+    _conn.execute(text("""
+        INSERT INTO user_auth_providers (user_id, provider, provider_user_id, provider_email)
+        SELECT id, provider, provider_user_id, email
+        FROM users
+        WHERE password_hash IS NULL
+          AND provider IS NOT NULL
+          AND provider_user_id IS NOT NULL
+        ON CONFLICT DO NOTHING
+    """))
     _conn.commit()
 
 app = FastAPI()
@@ -103,6 +148,7 @@ app.include_router(organization_members_router)
 app.include_router(cities_router)
 app.include_router(upload_router)
 app.include_router(support_router)
+app.include_router(providers_router)
 
 
 @app.get("/")

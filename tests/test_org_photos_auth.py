@@ -11,7 +11,7 @@ Only owners, admins, and system admins must be allowed to mutate photos.
 """
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.organization import Organization
 from app.models.organization_photo import OrganizationPhoto
 from app.models.organization_user import OrganizationUser
@@ -27,7 +27,7 @@ def _make_user(db, email, is_system_admin=False, status="active"):
     u = User(
         email=email,
         name="Test",
-        password_hash=hash_password("pw"),
+        password_hash=None,
         is_system_admin=is_system_admin,
         status=status,
     )

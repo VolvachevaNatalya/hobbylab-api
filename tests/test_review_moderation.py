@@ -11,7 +11,7 @@ a 200 but the field has no effect.
 """
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
 from app.models.review import Review
@@ -26,7 +26,7 @@ def _make_user(db, email, is_admin=False):
     u = User(
         email=email,
         name="Test User",
-        password_hash=hash_password("pw"),
+        password_hash=None,
         status="active",
         is_system_admin=is_admin,
     )

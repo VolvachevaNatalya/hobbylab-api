@@ -18,7 +18,7 @@ from app.api.auth import (
     _LOGIN_RATE_LIMIT, _login_attempts,
     _REFRESH_RATE_LIMIT, _refresh_attempts,
 )
-from app.core.security import create_refresh_token, hash_password
+from app.core.security import create_refresh_token
 from app.models.user import User
 
 _REFRESH_URL = "/auth/refresh"
@@ -43,7 +43,7 @@ def _make_user(db, email="sec@test.com"):
     u = User(
         email=email,
         name="Security Test",
-        password_hash=hash_password("pw"),
+        password_hash=None,
         status="active",
     )
     db.add(u)
@@ -137,7 +137,7 @@ class TestAppleErrorLeakage:
                    side_effect=JWTError("Signature verification failed.")):
             resp = client.post(
                 _APPLE_URL,
-                json={"id_token": "fake-token"},
+                json={"id_token": "fake-token", "nonce": "fake-nonce"},
                 headers={"X-Real-IP": _IP_B},
             )
 
@@ -228,20 +228,20 @@ class TestRefreshRateLimit:
         )
         assert resp.status_code == 200
 
-    def test_refresh_and_login_use_independent_buckets(self, client, db):
+    def test_refresh_and_social_login_use_independent_buckets(self, client, db):
         """
-        Login and refresh have separate buckets.  Exhausting the login limit
-        must NOT block refresh, and vice versa.  This prevents NAT exhaustion
-        when multiple users on the same IP refresh simultaneously.
+        Social login and refresh have separate buckets.  Exhausting the social
+        login limit must NOT block refresh, and vice versa.  This prevents NAT
+        exhaustion when multiple users on the same IP refresh simultaneously.
         """
         user = _make_user(db, "rl_indep@test.com")
         refresh_tok = create_refresh_token({"user_id": user.id})
 
-        # Exhaust the login bucket completely.
+        # Exhaust the social login bucket completely.
         for _ in range(_LOGIN_RATE_LIMIT):
             client.post(
-                "/auth/login",
-                data={"username": "x@test.com", "password": "wrong"},
+                "/auth/google-login",
+                json={"id_token": "fake"},
                 headers={"X-Real-IP": _IP_A},
             )
 
@@ -252,7 +252,7 @@ class TestRefreshRateLimit:
             headers={"X-Real-IP": _IP_A},
         )
         assert resp.status_code == 200, (
-            "exhausting the login bucket must not block the refresh endpoint"
+            "exhausting the social login bucket must not block the refresh endpoint"
         )
 
     def test_pydantic_rejection_does_not_consume_rate_limit_slot(self, client, db):

@@ -25,7 +25,7 @@ _EXPECTED_ORG_RESPONSE_FIELDS = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email, is_system_admin=False, name="Test User"):
-    u = User(email=email, name=name, password_hash="x", is_system_admin=is_system_admin)
+    u = User(email=email, name=name, password_hash=None, is_system_admin=is_system_admin)
     db.add(u)
     db.commit()
     db.refresh(u)

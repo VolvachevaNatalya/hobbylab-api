@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.user import User
 
 _UPLOAD_URL = "/upload"
@@ -27,7 +27,7 @@ _FAKE_URL = "https://static.hobbylab.co.il/test-uuid.jpg"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email="upload_user@test.com", status="active"):
-    u = User(email=email, name="Test", password_hash=hash_password("pw"), status=status)
+    u = User(email=email, name="Test", password_hash=None, status=status)
     db.add(u)
     db.commit()
     db.refresh(u)

@@ -31,7 +31,7 @@ _FUT_4 = datetime(2099, 1, 28, 10, 0)
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _make_user(db, email="rrb@test.com"):
-    u = User(email=email, name="RRB User", password_hash="x")
+    u = User(email=email, name="RRB User", password_hash=None)
     db.add(u)
     db.commit()
     db.refresh(u)

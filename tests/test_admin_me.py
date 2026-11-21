@@ -6,7 +6,7 @@ from app.models.user import User
 
 
 def _make_user(db, email="user@admin-test.com", is_system_admin=False):
-    user = User(email=email, name="Test User", password_hash="x",
+    user = User(email=email, name="Test User", password_hash=None,
                 is_system_admin=is_system_admin)
     db.add(user)
     db.commit()

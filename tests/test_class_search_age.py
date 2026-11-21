@@ -14,7 +14,7 @@ The existing `age` point-filter is preserved unchanged for backward compat.
 """
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.category import Category
 from app.models.classes import Class
 from app.models.group import Group
@@ -25,7 +25,7 @@ from app.models.user import User
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email):
-    u = User(email=email, name="T", password_hash=hash_password("pw"), status="active")
+    u = User(email=email, name="T", password_hash=None, status="active")
     db.add(u)
     db.commit()
     db.refresh(u)

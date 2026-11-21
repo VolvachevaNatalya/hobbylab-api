@@ -12,7 +12,7 @@ P2-2: _get_optional_user bypasses token_version
 """
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.category import Category
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
@@ -24,11 +24,11 @@ _ORG_UPDATE_URL = "/organizations/{id}"
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
-def _make_user(db, email, password="pw", is_admin=False):
+def _make_user(db, email, is_admin=False):
     u = User(
         email=email,
         name="Test",
-        password_hash=hash_password(password),
+        password_hash=None,
         status="active",
         is_system_admin=is_admin,
     )

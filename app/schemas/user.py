@@ -3,15 +3,6 @@ from datetime import datetime
 from typing import Optional
 
 
-class UserCreate(BaseModel):
-    email: str = Field(max_length=254)
-    name: str = Field(min_length=1, max_length=100)
-    password: str = Field(min_length=6, max_length=128)
-    phone: Optional[str] = None
-    avatar_url: Optional[str] = None
-    provider: Optional[str] = None
-    provider_user_id: Optional[str] = None
-
 class UserResponse(BaseModel):
     id: int
     email: str

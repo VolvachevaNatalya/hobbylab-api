@@ -7,7 +7,7 @@ Both fields must be absent from every response.
 """
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.user import User
 
 
@@ -18,12 +18,12 @@ _EXPECTED_FIELDS = {"id", "email", "name", "phone", "avatar_url", "provider",
                     "provider_user_id", "status", "created_at"}
 
 
-def _make_user(db, email="me_test@test.com", name="Me User", password="pw123",
+def _make_user(db, email="me_test@test.com", name="Me User",
                is_admin=False, status="active"):
     u = User(
         email=email,
         name=name,
-        password_hash=hash_password(password),
+        password_hash=None,
         is_system_admin=is_admin,
         status=status,
     )

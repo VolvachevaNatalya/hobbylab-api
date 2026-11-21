@@ -8,7 +8,7 @@ from app.models.user import User
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_admin(db):
-    u = User(email="admin@test.com", name="Admin", password_hash="x", is_system_admin=True)
+    u = User(email="admin@test.com", name="Admin", password_hash=None, is_system_admin=True)
     db.add(u)
     db.commit()
     db.refresh(u)
@@ -16,7 +16,7 @@ def _make_admin(db):
 
 
 def _make_regular_user(db):
-    u = User(email="user@test.com", name="User", password_hash="x", is_system_admin=False)
+    u = User(email="user@test.com", name="User", password_hash=None, is_system_admin=False)
     db.add(u)
     db.commit()
     db.refresh(u)

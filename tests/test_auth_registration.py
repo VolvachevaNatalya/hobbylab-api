@@ -1,216 +1,164 @@
+"""
+Regression: email/password authentication endpoints are no longer available.
+
+POST /auth/register, POST /auth/login, POST /auth/change-password,
+POST /auth/forgot-password, and POST /auth/reset-password must all return 404.
+"""
 import pytest
-
-from app.api.auth import _reg_attempts
-
-_VALID = {
-    "email": "newuser@example.com",
-    "name": "New User",
-    "password": "securepass123",
-}
-
-# IP used as a consistent "foreign" client via X-Forwarded-For
-_IP_A = "203.0.113.10"
-_IP_B = "203.0.113.20"
+import os
 
 
-@pytest.fixture(autouse=True)
-def clear_rate_limit():
-    """Reset in-process rate-limit state between tests."""
-    _reg_attempts.clear()
-    yield
-    _reg_attempts.clear()
-
-
-# ── successful registration ───────────────────────────────────────────────────
-
-def test_register_success(client):
-    resp = client.post("/auth/register", json=_VALID)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["email"] == _VALID["email"]
-    assert data["name"] == _VALID["name"]
-    assert "password" not in data
-    assert "password_hash" not in data
-
-
-# ── duplicate email ───────────────────────────────────────────────────────────
-
-def test_register_duplicate_email_rejected(client):
-    client.post("/auth/register", json=_VALID)
-    resp = client.post("/auth/register", json=_VALID)
-    assert resp.status_code == 400
-    # Response must not expose password or internal field names
-    body = resp.text.lower()
-    assert "password" not in body
-    assert "hash" not in body
-
-
-# ── input validation ──────────────────────────────────────────────────────────
-
-def test_register_name_empty_rejected(client):
-    resp = client.post("/auth/register", json={**_VALID, "name": ""})
-    assert resp.status_code == 422
-
-
-def test_register_name_too_long_rejected(client):
-    resp = client.post("/auth/register", json={**_VALID, "name": "A" * 101})
-    assert resp.status_code == 422
-
-
-def test_register_name_at_max_length_accepted(client):
-    resp = client.post("/auth/register", json={**_VALID, "name": "A" * 100})
-    assert resp.status_code == 200
-
-
-def test_register_email_too_long_rejected(client):
-    long_email = "a" * 245 + "@example.com"  # 257 chars > 254 limit
-    resp = client.post("/auth/register", json={**_VALID, "email": long_email})
-    assert resp.status_code == 422
-
-
-def test_register_password_too_short_rejected(client):
-    resp = client.post("/auth/register", json={**_VALID, "password": "12345"})
-    assert resp.status_code == 422
-
-
-def test_register_password_at_min_length_accepted(client):
-    resp = client.post("/auth/register", json={**_VALID, "password": "123456"})
-    assert resp.status_code == 200
-
-
-def test_register_password_too_long_rejected(client):
-    resp = client.post("/auth/register", json={**_VALID, "password": "x" * 129})
-    assert resp.status_code == 422
-
-
-def test_register_password_at_max_length_accepted(client):
-    resp = client.post("/auth/register", json={**_VALID, "password": "x" * 128})
-    assert resp.status_code == 200
-
-
-# ── rate limiting ─────────────────────────────────────────────────────────────
-
-def test_rate_limit_third_attempt_succeeds(client):
-    for i in range(3):
+class TestEmailPasswordEndpointsRemoved:
+    def test_register_returns_404(self, client):
         resp = client.post(
             "/auth/register",
-            json={**_VALID, "email": f"user{i}@example.com"},
-            headers={"X-Real-IP": _IP_A},
+            json={"email": "test@test.com", "name": "Test", "password": "test123"},
         )
-        assert resp.status_code == 200, f"attempt {i + 1} should succeed"
+        assert resp.status_code == 404, f"Expected 404, got {resp.status_code}"
 
-
-def test_rate_limit_fourth_attempt_blocked(client):
-    for i in range(3):
-        client.post(
-            "/auth/register",
-            json={**_VALID, "email": f"block{i}@example.com"},
-            headers={"X-Real-IP": _IP_A},
+    def test_login_returns_404(self, client):
+        resp = client.post(
+            "/auth/login",
+            data={"username": "test@test.com", "password": "test"},
         )
-    resp = client.post(
-        "/auth/register",
-        json={**_VALID, "email": "block4@example.com"},
-        headers={"X-Real-IP": _IP_A},
-    )
-    assert resp.status_code == 429
+        assert resp.status_code == 404, f"Expected 404, got {resp.status_code}"
 
-
-def test_rate_limit_is_per_ip(client):
-    """Exhausting IP_A's limit must not block IP_B."""
-    for i in range(3):
-        client.post(
-            "/auth/register",
-            json={**_VALID, "email": f"ipa{i}@example.com"},
-            headers={"X-Real-IP": _IP_A},
+    def test_change_password_returns_404(self, client):
+        resp = client.post(
+            "/auth/change-password",
+            json={"current_password": "old", "new_password": "new123"},
         )
-    resp = client.post(
-        "/auth/register",
-        json={**_VALID, "email": "ipb@example.com"},
-        headers={"X-Real-IP": _IP_B},
-    )
-    assert resp.status_code == 200
+        assert resp.status_code == 404, f"Expected 404, got {resp.status_code}"
 
-
-def test_rate_limit_duplicate_attempts_count(client):
-    """Duplicate-email attempts consume rate-limit slots."""
-    # Slot 1: new account created
-    client.post("/auth/register", json=_VALID, headers={"X-Real-IP": _IP_A})
-    # Slots 2 & 3: duplicate → 400, but counter still advances
-    for _ in range(2):
-        resp = client.post("/auth/register", json=_VALID,
-                           headers={"X-Real-IP": _IP_A})
-        assert resp.status_code == 400
-    # Slot 4: limit reached → 429
-    resp = client.post(
-        "/auth/register",
-        json={**_VALID, "email": "fresh@example.com"},
-        headers={"X-Real-IP": _IP_A},
-    )
-    assert resp.status_code == 429
-
-
-def test_rate_limit_validation_errors_do_not_count(client):
-    """Pydantic 422 rejections are caught before the route function runs and
-    therefore do not consume rate-limit slots."""
-    bad = {**_VALID, "password": "x"}  # too short → 422
-    for _ in range(10):
-        resp = client.post("/auth/register", json=bad,
-                           headers={"X-Real-IP": _IP_A})
-        assert resp.status_code == 422
-    # Rate limit should be intact — a valid request must still succeed
-    resp = client.post("/auth/register", json=_VALID,
-                       headers={"X-Real-IP": _IP_A})
-    assert resp.status_code == 200
-
-
-# ── logging ───────────────────────────────────────────────────────────────────
-
-def test_successful_registration_logged(client, caplog):
-    import logging
-    with caplog.at_level(logging.INFO, logger="app.api.auth"):
-        client.post("/auth/register", json=_VALID,
-                    headers={"X-Real-IP": _IP_A,
-                             "User-Agent": "TestAgent/1.0"})
-    assert any("registration success" in r.message for r in caplog.records)
-    assert any(_IP_A in r.message for r in caplog.records)
-    assert any("password" not in r.message for r in caplog.records)
-
-
-def test_duplicate_registration_logged_as_warning(client, caplog):
-    import logging
-    client.post("/auth/register", json=_VALID)
-    with caplog.at_level(logging.WARNING, logger="app.api.auth"):
-        client.post("/auth/register", json=_VALID,
-                    headers={"X-Real-IP": _IP_A})
-    assert any("registration duplicate" in r.message for r in caplog.records)
-
-
-# ── IP source preference ──────────────────────────────────────────────────────
-
-def test_x_real_ip_is_used_for_rate_limiting(client):
-    """Rate limit keyed on X-Real-IP: exhausting one IP must not block another."""
-    for i in range(3):
-        client.post(
-            "/auth/register",
-            json={**_VALID, "email": f"rip{i}@example.com"},
-            headers={"X-Real-IP": _IP_A},
+    def test_forgot_password_returns_404(self, client):
+        resp = client.post(
+            "/auth/forgot-password",
+            json={"email": "test@test.com"},
         )
-    # IP_A is now at limit; IP_B must be unaffected
-    resp = client.post(
-        "/auth/register",
-        json={**_VALID, "email": "ripb@example.com"},
-        headers={"X-Real-IP": _IP_B},
-    )
-    assert resp.status_code == 200
+        assert resp.status_code == 404, f"Expected 404, got {resp.status_code}"
+
+    def test_reset_password_returns_404(self, client):
+        resp = client.post(
+            "/auth/reset-password",
+            json={"email": "test@test.com", "otp": "123456", "new_password": "newpass"},
+        )
+        assert resp.status_code == 404, f"Expected 404, got {resp.status_code}"
 
 
-def test_fallback_to_request_client_host_when_no_x_real_ip(client, caplog):
-    """When X-Real-IP is absent the request.client.host value is used.
-    TestClient sets request.client.host to 'testclient', so all no-header
-    requests share that bucket — the 4th must be rate-limited."""
-    import logging
-    _reg_attempts.clear()
-    for i in range(3):
-        client.post("/auth/register", json={**_VALID, "email": f"fb{i}@example.com"})
-    resp = client.post("/auth/register", json={**_VALID, "email": "fb4@example.com"})
-    assert resp.status_code == 429
+class TestEmailPasswordAccountCannotBypassSocialAuth:
+    """
+    Regression: an account that has a password_hash must not be allowed to
+    authenticate via any social provider, even if the email matches.
+    """
+
+    def test_email_password_account_blocked_at_google_login(self, client, db):
+        from unittest.mock import patch
+        from app.core.security import hash_password
+        from app.models.user import User
+
+        u = User(
+            email="ep_google@test.com",
+            name="EP",
+            password_hash=hash_password("secret"),
+            status="active",
+        )
+        db.add(u)
+        db.commit()
+
+        id_info = {"email": "ep_google@test.com", "name": "EP User", "sub": "g123", "email_verified": True}
+        with patch("app.api.auth.os.getenv", return_value="fake-client-id"), \
+             patch("google.oauth2.id_token.verify_oauth2_token", return_value=id_info):
+            resp = client.post("/auth/google-login", json={"id_token": "fake-token"})
+
+        assert resp.status_code == 403, (
+            f"email/password account must not authenticate via Google (got {resp.status_code})"
+        )
+
+    def test_email_password_account_blocked_at_facebook_login(self, client, db):
+        from unittest.mock import patch
+        from app.core.security import hash_password
+        from app.models.user import User
+
+        u = User(
+            email="ep_facebook@test.com",
+            name="EP",
+            password_hash=hash_password("secret"),
+            status="active",
+        )
+        db.add(u)
+        db.commit()
+
+        fb_debug = {"data": {"is_valid": True, "app_id": "fake-app-id", "user_id": "fb123"}}
+        fb_me = {"id": "fb123", "name": "EP User", "email": "ep_facebook@test.com"}
+
+        with patch.dict(os.environ, {"FACEBOOK_APP_ID": "fake-app-id", "FACEBOOK_APP_SECRET": "fake-secret"}), \
+             patch("app.api.auth._validate_facebook_token", return_value=fb_me):
+            resp = client.post("/auth/facebook-login", json={"access_token": "fake-token"})
+
+        assert resp.status_code == 403, (
+            f"email/password account must not authenticate via Facebook (got {resp.status_code})"
+        )
+
+    def test_email_password_account_blocked_at_apple_login(self, client, db):
+        from unittest.mock import patch
+        from app.core.security import hash_password
+        from app.models.user import User
+
+        u = User(
+            email="ep_apple@test.com",
+            name="EP",
+            password_hash=hash_password("secret"),
+            status="active",
+        )
+        db.add(u)
+        db.commit()
+
+        apple_claims = {"sub": "apple_sub_123", "email": "ep_apple@test.com", "email_verified": True}
+
+        with patch("app.api.auth._validate_apple_token", return_value=apple_claims):
+            resp = client.post("/auth/apple-login", json={"id_token": "fake-token", "nonce": "dummy-nonce"})
+
+        assert resp.status_code == 403, (
+            f"email/password account must not authenticate via Apple (got {resp.status_code})"
+        )
+
+
+class TestCrossProviderAccountIsolation:
+    """
+    Regression: a Google account must not be accessible via Facebook (or vice versa)
+    even when both present the same email address.
+    """
+
+    def test_google_and_facebook_same_email_are_separate_accounts(self, client, db):
+        from unittest.mock import patch
+        from app.models.user import User
+        from app.models.user_auth_provider import UserAuthProvider
+
+        # Create a Google user
+        google_id_info = {
+            "email": "shared@example.com",
+            "name": "Google User",
+            "sub": "google_sub_xyz",
+            "email_verified": True,
+        }
+        with patch("app.api.auth.os.getenv", return_value="fake-client-id"), \
+             patch("google.oauth2.id_token.verify_oauth2_token", return_value=google_id_info):
+            resp = client.post("/auth/google-login", json={"id_token": "fake"})
+        assert resp.status_code == 200
+        google_access_token = resp.json()["access_token"]
+
+        # Now log in via Facebook claiming the same email — must create a separate account
+        fb_me = {"id": "fb_xyz", "name": "Facebook User", "email": "shared@example.com"}
+        with patch("app.api.auth._validate_facebook_token", return_value=fb_me):
+            resp2 = client.post("/auth/facebook-login", json={"access_token": "fake-fb"})
+        assert resp2.status_code == 200
+        fb_access_token = resp2.json()["access_token"]
+
+        # The two tokens must reference different accounts
+        assert google_access_token != fb_access_token
+        # Verify two separate UserAuthProvider rows exist
+        google_prov = db.query(UserAuthProvider).filter_by(provider="google", provider_user_id="google_sub_xyz").first()
+        fb_prov = db.query(UserAuthProvider).filter_by(provider="facebook", provider_user_id="fb_xyz").first()
+        assert google_prov is not None
+        assert fb_prov is not None
+        assert google_prov.user_id != fb_prov.user_id

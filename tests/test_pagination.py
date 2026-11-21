@@ -14,7 +14,7 @@ import datetime
 
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.category import Category
 from app.models.classes import Class
 from app.models.group import Group
@@ -28,7 +28,7 @@ from app.models.user import User
 # ── shared helpers ────────────────────────────────────────────────────────────
 
 def _make_user(db, email, status="active"):
-    u = User(email=email, name="T", password_hash=hash_password("pw"), status=status)
+    u = User(email=email, name="T", password_hash=None, status=status)
     db.add(u)
     db.commit()
     db.refresh(u)

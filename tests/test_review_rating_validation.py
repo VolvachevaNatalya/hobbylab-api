@@ -9,7 +9,7 @@ invalid values before they touch the database → HTTP 422.
 """
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.organization import Organization
 from app.models.review import Review
 from app.models.user import User
@@ -20,7 +20,7 @@ _REVIEWS_URL = "/reviews/"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email="review_val@test.com"):
-    u = User(email=email, name="Reviewer", password_hash=hash_password("pw"), status="active")
+    u = User(email=email, name="Reviewer", password_hash=None, status="active")
     db.add(u)
     db.commit()
     db.refresh(u)

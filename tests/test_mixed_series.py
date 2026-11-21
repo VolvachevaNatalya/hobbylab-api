@@ -35,7 +35,7 @@ _FUT_MOVE = datetime(2099, 6, 1, 10, 0)  # target for the "move past→future" t
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email):
-    u = User(email=email, name="MS User", password_hash="x")
+    u = User(email=email, name="MS User", password_hash=None)
     db.add(u)
     db.commit()
     db.refresh(u)

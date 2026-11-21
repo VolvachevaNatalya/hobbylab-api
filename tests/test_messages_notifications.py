@@ -17,7 +17,7 @@ from app.schemas.conversation import ConversationResponse
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email="u@test.com", name="User"):
-    u = User(email=email, name=name, password_hash="x")
+    u = User(email=email, name=name, password_hash=None)
     db.add(u)
     db.commit()
     db.refresh(u)

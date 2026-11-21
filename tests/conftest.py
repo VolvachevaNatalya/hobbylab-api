@@ -37,6 +37,7 @@ from app.api.me import router as me_router
 from app.api.promotions import router as promotions_router
 from app.api.reviews import router as reviews_router
 from app.api.upload import router as upload_router
+from app.api.providers import router as providers_router
 
 # Import every model so that Base.metadata knows all tables and can resolve FKs.
 import app.models.category          # noqa: F401
@@ -64,7 +65,7 @@ import app.models.organization_category      # noqa: F401
 import app.models.city                      # noqa: F401
 import app.models.event_series               # noqa: F401
 import app.models.support_request            # noqa: F401
-import app.models.password_reset_token       # noqa: F401
+import app.models.user_auth_provider         # noqa: F401
 
 app = FastAPI()
 app.include_router(admin_router)
@@ -91,6 +92,7 @@ app.include_router(reviews_router)
 app.include_router(subscriptions_router)
 app.include_router(promotions_router)
 app.include_router(upload_router)
+app.include_router(providers_router)
 
 import math
 from sqlalchemy import event as sa_event
@@ -129,18 +131,12 @@ def reset_rate_limits():
     later tests that never set a custom X-Real-IP to get 429 instead of
     their expected response code.
     """
-    from app.api.auth import _login_attempts, _reg_attempts, _refresh_attempts, _forgot_attempts, _reset_attempts
+    from app.api.auth import _login_attempts, _refresh_attempts
     _login_attempts.clear()
-    _reg_attempts.clear()
     _refresh_attempts.clear()
-    _forgot_attempts.clear()
-    _reset_attempts.clear()
     yield
     _login_attempts.clear()
-    _reg_attempts.clear()
     _refresh_attempts.clear()
-    _forgot_attempts.clear()
-    _reset_attempts.clear()
 
 
 @pytest.fixture

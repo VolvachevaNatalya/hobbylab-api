@@ -17,7 +17,7 @@ _VALID = {"subject": "billing", "message": "Charged twice."}
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email="support_user@test.com", name="Support User"):
-    user = User(email=email, name=name, password_hash="x")
+    user = User(email=email, name=name, password_hash=None)
     db.add(user)
     db.commit()
     db.refresh(user)

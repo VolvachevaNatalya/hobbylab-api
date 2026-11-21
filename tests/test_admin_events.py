@@ -27,7 +27,7 @@ _START = "2099-01-01T10:00:00"
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email, is_system_admin=False):
-    u = User(email=email, name="Test", password_hash="x", is_system_admin=is_system_admin)
+    u = User(email=email, name="Test", password_hash=None, is_system_admin=is_system_admin)
     db.add(u)
     db.commit()
     db.refresh(u)

@@ -9,7 +9,7 @@ P3-4: Standalone review image endpoint has no per-review count limit
 import pytest
 from datetime import datetime, timedelta
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.category import Category
 from app.models.event import Event
 from app.models.notification import Notification
@@ -26,7 +26,7 @@ def _make_user(db, email, is_admin=False):
     u = User(
         email=email,
         name="Test",
-        password_hash=hash_password("pw"),
+        password_hash=None,
         status="active",
         is_system_admin=is_admin,
     )

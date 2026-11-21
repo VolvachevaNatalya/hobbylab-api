@@ -1,4 +1,5 @@
 import os
+import time as _time
 from passlib.context import CryptContext
 from jose import jwt
 from datetime import datetime, timedelta
@@ -28,6 +29,7 @@ def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     to_encode.update({
         "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        "iat": int(_time.time()),
         "type": "access",
     })
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)

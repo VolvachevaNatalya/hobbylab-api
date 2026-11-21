@@ -1,7 +1,7 @@
 """Tests for GET/PUT /me/notification-preferences."""
 import pytest
 
-from app.core.security import create_access_token, hash_password
+from app.core.security import create_access_token
 from app.models.user import User
 
 _GET_URL = "/me/notification-preferences"
@@ -14,7 +14,7 @@ def _make_user(db, email="pref@x.com", **kwargs):
     u = User(
         email=email,
         name="Pref User",
-        password_hash=hash_password("pass123"),
+        password_hash=None,
         **kwargs,
     )
     db.add(u)

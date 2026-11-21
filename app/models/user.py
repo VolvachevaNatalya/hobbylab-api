@@ -1,4 +1,5 @@
 from sqlalchemy import Boolean, Column, Integer, String, Text, TIMESTAMP
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.db.database import Base
 
@@ -35,3 +36,5 @@ class User(Base):
     notif_chat = Column(Boolean, nullable=False, default=True, server_default="true")
     notif_activity = Column(Boolean, nullable=False, default=False, server_default="false")
     notif_offers = Column(Boolean, nullable=False, default=True, server_default="true")
+
+    auth_providers = relationship("UserAuthProvider", back_populates="user", cascade="all, delete-orphan")

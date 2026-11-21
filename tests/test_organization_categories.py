@@ -12,7 +12,7 @@ from app.models.user import User
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email="user@test.com"):
-    user = User(email=email, name="Test User", password_hash="x")
+    user = User(email=email, name="Test User", password_hash=None)
     db.add(user)
     db.commit()
     db.refresh(user)

@@ -21,7 +21,7 @@ from app.models.user import User
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _make_user(db, email):
-    u = User(email=email, name="Test", password_hash="x")
+    u = User(email=email, name="Test", password_hash=None)
     db.add(u)
     db.commit()
     db.refresh(u)

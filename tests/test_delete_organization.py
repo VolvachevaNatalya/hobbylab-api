@@ -6,7 +6,7 @@ from app.core.security import create_access_token
 
 
 def _make_user(db, email="user@test.com", name="Test User"):
-    user = User(email=email, name=name, password_hash="x")
+    user = User(email=email, name=name, password_hash=None)
     db.add(user)
     db.commit()
     db.refresh(user)
