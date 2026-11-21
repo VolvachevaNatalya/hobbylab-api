@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 
 from app.db.database import Base
@@ -18,6 +18,6 @@ class UserAuthProvider(Base):
     provider = Column(String, nullable=False)
     provider_user_id = Column(String, nullable=False)
     provider_email = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="auth_providers")

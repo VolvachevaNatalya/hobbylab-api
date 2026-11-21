@@ -100,8 +100,8 @@ with engine.connect() as _conn:
         )
 
     _conn.execute(text("""
-        INSERT INTO user_auth_providers (user_id, provider, provider_user_id, provider_email)
-        SELECT id, provider, provider_user_id, email
+        INSERT INTO user_auth_providers (user_id, provider, provider_user_id, provider_email, created_at)
+        SELECT id, provider, provider_user_id, email, NOW()
         FROM users
         WHERE password_hash IS NULL
           AND provider IS NOT NULL
