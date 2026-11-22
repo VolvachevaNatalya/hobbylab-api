@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from typing import Optional
 from pydantic import BaseModel
 from app.core.auth import get_current_user
 from app.db.dependencies import get_db
 from app.models.user import User
+from app.models.organization import Organization
+from app.models.organization_user import OrganizationUser
+from app.models.user_auth_provider import UserAuthProvider
 
 router = APIRouter()
 
@@ -107,3 +110,54 @@ def update_notification_preferences(
         notif_activity=current_user.notif_activity,
         notif_offers=current_user.notif_offers,
     )
+
+
+@router.delete("/me", status_code=204)
+def delete_account(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Already deleted — idempotent
+    if current_user.status == "deleted":
+        return Response(status_code=204)
+
+    # Refuse if user is the sole owner of any organisation
+    owned_memberships = (
+        db.query(OrganizationUser)
+        .filter(OrganizationUser.user_id == current_user.id, OrganizationUser.role == "owner")
+        .all()
+    )
+    for membership in owned_memberships:
+        other_owners = (
+            db.query(OrganizationUser)
+            .filter(
+                OrganizationUser.organization_id == membership.organization_id,
+                OrganizationUser.role == "owner",
+                OrganizationUser.user_id != current_user.id,
+            )
+            .count()
+        )
+        if other_owners == 0:
+            org = db.query(Organization).filter(Organization.id == membership.organization_id).first()
+            name = org.name if org else f"organization #{membership.organization_id}"
+            raise HTTPException(
+                status_code=409,
+                detail=f"You are the sole owner of '{name}'. Transfer ownership or delete the organization first.",
+            )
+
+    # Bump token_version → invalidates all existing JWTs / refresh tokens immediately
+    current_user.token_version = (current_user.token_version or 0) + 1
+
+    # Soft-delete: blocks all future auth paths without destroying shared data
+    current_user.status = "deleted"
+
+    # Anonymize the email so the address is immediately available for a fresh
+    # registration with the same social identity.  The soft-deleted row's data
+    # (reviews, messages, etc.) is preserved; only the email is replaced.
+    current_user.email = f"deleted_{current_user.id}@deleted.local"
+
+    # Remove provider links → prevents re-login restoring the deleted account
+    db.query(UserAuthProvider).filter(UserAuthProvider.user_id == current_user.id).delete()
+
+    db.commit()
+    return Response(status_code=204)

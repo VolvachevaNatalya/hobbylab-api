@@ -299,43 +299,54 @@ def _get_or_create_user_by_provider(
         if existing:
             if existing.password_hash is not None:
                 raise HTTPException(status_code=403, detail="Account registered with a different provider")
-            # Only backfill if the user has no other provider already linked.
-            # If another provider is linked, they're a different person — create a new account.
-            other_prov = (
-                db.query(UserAuthProvider)
-                .filter(
-                    UserAuthProvider.user_id == existing.id,
-                    UserAuthProvider.provider != provider,
-                )
-                .first()
-            )
-            if other_prov is None:
-                try:
-                    ap = UserAuthProvider(
-                        user_id=existing.id,
-                        provider=provider,
-                        provider_user_id=provider_user_id,
-                        provider_email=provider_email,
-                    )
-                    db.add(ap)
-                    db.commit()
-                    return existing
-                except IntegrityError:
-                    db.rollback()
-                    auth_prov = (
-                        db.query(UserAuthProvider)
-                        .filter(
-                            UserAuthProvider.provider == provider,
-                            UserAuthProvider.provider_user_id == provider_user_id,
-                        )
-                        .first()
-                    )
-                    if auth_prov:
-                        return auth_prov.user
-                    return existing
+
+            if existing.status == "deleted":
+                # The account was deleted; allow a completely fresh registration.
+                # Lazily anonymize the email for accounts deleted before the fix
+                # so the email is free for the new account created in step 3.
+                if not (existing.email or "").startswith("deleted_"):
+                    existing.email = f"deleted_{existing.id}@deleted.local"
+                    db.flush()
+                # fall through to step 3 — do NOT backfill the provider onto the
+                # deleted account; the new account gets a new row and a new ID.
             else:
-                # Different person owns this email — fall through to new account with fallback email
-                email_for_new_user = ""
+                # Only backfill if the user has no other provider already linked.
+                # If another provider is linked, they're a different person — create a new account.
+                other_prov = (
+                    db.query(UserAuthProvider)
+                    .filter(
+                        UserAuthProvider.user_id == existing.id,
+                        UserAuthProvider.provider != provider,
+                    )
+                    .first()
+                )
+                if other_prov is None:
+                    try:
+                        ap = UserAuthProvider(
+                            user_id=existing.id,
+                            provider=provider,
+                            provider_user_id=provider_user_id,
+                            provider_email=provider_email,
+                        )
+                        db.add(ap)
+                        db.commit()
+                        return existing
+                    except IntegrityError:
+                        db.rollback()
+                        auth_prov = (
+                            db.query(UserAuthProvider)
+                            .filter(
+                                UserAuthProvider.provider == provider,
+                                UserAuthProvider.provider_user_id == provider_user_id,
+                            )
+                            .first()
+                        )
+                        if auth_prov:
+                            return auth_prov.user
+                        return existing
+                else:
+                    # Different person owns this email — fall through to new account with fallback email
+                    email_for_new_user = ""
 
     # 3. Brand new user
     email = email_for_new_user if email_for_new_user else f"{provider}_{provider_user_id}@noemail.local"
