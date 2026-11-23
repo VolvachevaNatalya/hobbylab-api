@@ -28,6 +28,11 @@ from app.core.event_notifications import (
     notify_event_updated,
     notify_new_event,
 )
+from app.core.push_notifications import (
+    push_event_cancelled,
+    push_event_updated,
+    push_new_event,
+)
 from app.services.geocoding import geocode
 from app.services.recurrence import adjust_original_series_after_split, generate_dates
 
@@ -1278,8 +1283,9 @@ def create_event(
 
     org = db.query(Organization).filter(Organization.id == new_event.organization_id).first()
     if org:
-        notify_new_event(new_event.id, new_event.title, org.id, org.name, current_user.id, db)
+        push_recips = notify_new_event(new_event.id, new_event.title, org.id, org.name, current_user.id, db)
         db.commit()
+        push_new_event(push_recips, new_event.id, new_event.title, org.name, db)
 
     return _enrich(new_event, db)
 
@@ -1329,11 +1335,13 @@ def update_event(
     result = _do_update_event(event, update_data, category_ids, recurrence, remove_recurrence, scope, db)
 
     if is_cancellation:
-        notify_event_cancelled(original_id, original_title, current_user.id, db)
+        push_recips = notify_event_cancelled(original_id, original_title, current_user.id, db)
         db.commit()
+        push_event_cancelled(push_recips, original_id, original_title, db)
     elif needs_update_notify:
-        notify_event_updated(original_id, original_title, current_user.id, db)
+        push_recips = notify_event_updated(original_id, original_title, current_user.id, db)
         db.commit()
+        push_event_updated(push_recips, original_id, original_title, db)
 
     return result
 

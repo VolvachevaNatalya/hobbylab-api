@@ -66,6 +66,7 @@ import app.models.city                      # noqa: F401
 import app.models.event_series               # noqa: F401
 import app.models.support_request            # noqa: F401
 import app.models.user_auth_provider         # noqa: F401
+import app.models.device_token               # noqa: F401
 
 app = FastAPI()
 app.include_router(admin_router)

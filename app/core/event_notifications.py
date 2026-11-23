@@ -70,10 +70,11 @@ def _bulk_create(
         ))
 
 
-def notify_event_updated(event_id: int, event_title: str, actor_id: int, db: Session) -> None:
+def notify_event_updated(event_id: int, event_title: str, actor_id: int, db: Session) -> Set[int]:
+    """Add in-app notification rows.  Returns the recipient set for push delivery."""
     recipients = _event_favoriters(event_id, db) - {actor_id}
     if not recipients:
-        return
+        return set()
     _bulk_create(
         recipients,
         "event_updated",
@@ -82,12 +83,14 @@ def notify_event_updated(event_id: int, event_title: str, actor_id: int, db: Ses
         {"event_id": event_id, "event_title": event_title},
         db,
     )
+    return recipients
 
 
-def notify_event_cancelled(event_id: int, event_title: str, actor_id: int, db: Session) -> None:
+def notify_event_cancelled(event_id: int, event_title: str, actor_id: int, db: Session) -> Set[int]:
+    """Add in-app notification rows.  Returns the recipient set for push delivery."""
     recipients = _event_favoriters(event_id, db) - {actor_id}
     if not recipients:
-        return
+        return set()
     _bulk_create(
         recipients,
         "event_cancelled",
@@ -96,6 +99,7 @@ def notify_event_cancelled(event_id: int, event_title: str, actor_id: int, db: S
         {"event_id": event_id, "event_title": event_title},
         db,
     )
+    return recipients
 
 
 def notify_new_event(
@@ -105,12 +109,13 @@ def notify_new_event(
     org_name: str,
     actor_id: int,
     db: Session,
-) -> None:
+) -> Set[int]:
+    """Add in-app notification rows.  Returns the recipient set for push delivery."""
     owners = _org_owner_ids(org_id, db)
     exclude = {actor_id} | owners
     recipients = _org_favoriters(org_id, db) - exclude
     if not recipients:
-        return
+        return set()
     _bulk_create(
         recipients,
         "new_event",
@@ -119,3 +124,4 @@ def notify_new_event(
         {"event_id": event_id, "event_title": event_title, "organization_name": org_name},
         db,
     )
+    return recipients

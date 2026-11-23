@@ -4,10 +4,13 @@ from typing import Optional
 from pydantic import BaseModel
 from app.core.auth import get_current_user
 from app.db.dependencies import get_db
+from app.models.device_token import DeviceToken
 from app.models.user import User
 from app.models.organization import Organization
 from app.models.organization_user import OrganizationUser
 from app.models.user_auth_provider import UserAuthProvider
+
+_VALID_LOCALES = frozenset({"en", "ru", "he"})
 
 router = APIRouter()
 
@@ -30,6 +33,15 @@ class NotificationPreferencesUpdate(BaseModel):
     notif_chat: Optional[bool] = None
     notif_activity: Optional[bool] = None
     notif_offers: Optional[bool] = None
+
+
+class DeviceTokenRequest(BaseModel):
+    token: str
+    platform: str = "android"
+
+
+class LocaleRequest(BaseModel):
+    locale: str
 
 
 def _is_fallback_email(user: User) -> bool:
@@ -112,6 +124,67 @@ def update_notification_preferences(
     )
 
 
+@router.post("/me/device-token", status_code=200)
+def register_device_token(
+    body: DeviceTokenRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Register or refresh an FCM device token for the authenticated user.
+
+    If the token is already associated with a different account (e.g. after an
+    account switch on the same device) it is re-assigned to the current user.
+    """
+    if not body.token or not body.token.strip():
+        raise HTTPException(status_code=400, detail="Token must not be empty")
+
+    existing = db.query(DeviceToken).filter(DeviceToken.token == body.token).first()
+    if existing:
+        if existing.user_id != current_user.id:
+            # Token belonged to a previous account on this device — reassign it
+            existing.user_id = current_user.id
+            existing.platform = body.platform
+            db.commit()
+        return {"status": "ok"}
+
+    db.add(DeviceToken(
+        user_id=current_user.id,
+        token=body.token,
+        platform=body.platform,
+    ))
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.delete("/me/device-token", status_code=200)
+def remove_device_token(
+    body: DeviceTokenRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove an FCM device token on logout or account switch."""
+    db.query(DeviceToken).filter(
+        DeviceToken.token == body.token,
+        DeviceToken.user_id == current_user.id,
+    ).delete()
+    db.commit()
+    return {"status": "ok"}
+
+
+@router.put("/me/locale", status_code=200)
+def update_locale(
+    body: LocaleRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Sync the user's preferred locale for localized push notification text."""
+    if body.locale not in _VALID_LOCALES:
+        raise HTTPException(status_code=400, detail=f"locale must be one of {sorted(_VALID_LOCALES)}")
+    current_user.preferred_locale = body.locale
+    db.commit()
+    return {"locale": body.locale}
+
+
 @router.delete("/me", status_code=204)
 def delete_account(
     current_user: User = Depends(get_current_user),
@@ -158,6 +231,9 @@ def delete_account(
 
     # Remove provider links → prevents re-login restoring the deleted account
     db.query(UserAuthProvider).filter(UserAuthProvider.user_id == current_user.id).delete()
+
+    # Remove device tokens → deleted accounts must not receive push notifications
+    db.query(DeviceToken).filter(DeviceToken.user_id == current_user.id).delete()
 
     db.commit()
     return Response(status_code=204)

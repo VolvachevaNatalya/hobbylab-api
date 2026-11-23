@@ -12,6 +12,7 @@ from app.models.notification import Notification
 from app.models.organization_user import OrganizationUser
 from app.models.user import User
 from app.schemas.message import MessageCreate, MessageResponse
+from app.core.push_notifications import push_new_message
 
 router = APIRouter(prefix="/messages", tags=["messages"])
 
@@ -66,6 +67,7 @@ def create_message(
 
     conversation.last_message_at = datetime.now(timezone.utc)
 
+    push_recipients: set = set()
     if is_user_side:
         # Notify ALL owner/admin members of the organization.
         org_members = db.query(OrganizationUser).filter(
@@ -81,6 +83,7 @@ def create_message(
                 message="notification.new_message.body",
                 type="message",
             ))
+            push_recipients.add(member.user_id)
     else:
         # Org-side reply: notify the user who owns the conversation.
         db.add(Notification(
@@ -91,9 +94,14 @@ def create_message(
             message="notification.new_message.body",
             type="message",
         ))
+        push_recipients.add(conversation.user_id)
 
     db.commit()
     db.refresh(message)
+
+    # Send FCM push AFTER commit — no open transaction during outbound HTTP call
+    push_new_message(push_recipients, db)
+
     return message
 
 

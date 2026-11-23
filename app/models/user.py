@@ -31,6 +31,9 @@ class User(Base):
     # even if they have not yet expired.
     token_version = Column(Integer, nullable=False, default=0, server_default="0")
 
+    # Language code for push notification text: 'en' | 'ru' | 'he'
+    preferred_locale = Column(String(5), nullable=False, default="en", server_default="'en'")
+
     # Per-user notification preferences (used by the mobile app settings screen).
     notif_appointments = Column(Boolean, nullable=False, default=True, server_default="true")
     notif_chat = Column(Boolean, nullable=False, default=True, server_default="true")

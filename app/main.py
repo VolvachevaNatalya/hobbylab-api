@@ -32,6 +32,7 @@ from app.api.providers import router as providers_router
 from app.db.database import Base
 from app.models import *
 from app.models.user_auth_provider import UserAuthProvider  # noqa: F401 – ensures table is created
+from app.models.device_token import DeviceToken  # noqa: F401 – ensures table is created
 from app.models.organization_photo import OrganizationPhoto  # noqa: F401 – ensures table is created
 from app.models.organization_invite_code import OrganizationInviteCode  # noqa: F401 – ensures table is created
 from app.models.organization_join_request import OrganizationJoinRequest  # noqa: F401 – ensures table is created
@@ -62,6 +63,23 @@ with engine.connect() as _conn:
     ))
     _conn.execute(text(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS notif_offers BOOLEAN NOT NULL DEFAULT TRUE"
+    ))
+    _conn.execute(text(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS preferred_locale VARCHAR(5) NOT NULL DEFAULT 'en'"
+    ))
+    _conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token VARCHAR(255) NOT NULL,
+            platform VARCHAR(10) NOT NULL DEFAULT 'android',
+            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+            CONSTRAINT uq_device_token UNIQUE (token)
+        )
+    """))
+    _conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_device_tokens_user_id ON device_tokens (user_id)"
     ))
     _conn.execute(text(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS provider VARCHAR(50)"
